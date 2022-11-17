@@ -12,19 +12,16 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone https://github.com/ograsdijk/CeNTREX-TlF-Hamiltonian.git CeNTREX-TlF-hamiltonian
+RUN git clone https://github.com/ograsdijk/CeNTREX-TlF-Hamiltonian.git centrex_hamiltonian
 
-RUN pip3 install CeNTREX-TlF-hamiltonian
+RUN pip3 install ./centrex_hamiltonian
 
-RUN git clone https://github.com/ograsdijk/CeNTREX-TlF-Couplings.git CeNTREX-TlF-couplings
+RUN git clone https://github.com/ograsdijk/CeNTREX-TlF-Couplings.git centrex_couplings
 
-RUN pip3 install CeNTREX-TlF-couplings
+RUN pip3 install ./centrex_couplings
 
-RUN git clone https://github.com/ograsdijk/CeNTREX-transition-finder.git .
+RUN git clone https://github.com/ograsdijk/CeNTREX-transition-finder.git transition_finder
 
+RUN pip3 install -r ./transition_finder/requirements.txt
 
-
-
-RUN pip3 install -r requirements.txt
-
-ENTRYPOINT ["streamlit", "run", "transition_finder.py", "--server.port=8501", "--server.address=0.0.0.0"]
+ENTRYPOINT ["streamlit", "run", "./transition_finder/transition_finder.py", "--server.port=8501", "--server.address=0.0.0.0"]
