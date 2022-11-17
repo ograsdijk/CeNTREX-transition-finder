@@ -12,7 +12,7 @@ from calibration import get_offset, Q2_F1_5_2_F_3
 st.set_page_config(page_title="CeNTREX Transitions")
 
 
-file_path = Path(__file__).parent().absolute()
+file_path = Path(__file__).parent.absolute()
 
 if "sorted_transitions" not in st.session_state:
     # sorted_transitions = get_transitions(
