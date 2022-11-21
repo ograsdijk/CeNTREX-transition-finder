@@ -1,13 +1,13 @@
+import pickle
 from pathlib import Path
 
 import streamlit as st
-import pickle
 
-# from hamiltonian_utils import get_transitions
+from calibration import Q2_F1_5_2_F_3, get_offset
+from dataframe_utils import generate_dataframe
+from hamiltonian_utils import get_transitions
 from plot_utils import generate_plot
 from transition_utils import parse_transition
-from dataframe_utils import generate_dataframe
-from calibration import get_offset, Q2_F1_5_2_F_3
 
 st.set_page_config(page_title="CeNTREX Transitions")
 
@@ -18,8 +18,12 @@ if "sorted_transitions" not in st.session_state:
     # sorted_transitions = get_transitions(
     #     J_ground=[0, 1, 2, 3, 4, 5, 6], J_excited=[1, 2, 3, 4, 5, 6]
     # )
+    # with open(file_path / "sorted_transitions.pkl", "wb") as f:
+    #     pickle.dump(sorted_transitions, f)
+
     with open(file_path / "sorted_transitions.pkl", "rb") as f:
         sorted_transitions = pickle.load(f)
+    st.session_state["sorted_transitions"] = sorted_transitions
 else:
     sorted_transitions = st.session_state["sorted_transitions"]
 
