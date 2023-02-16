@@ -5,8 +5,7 @@ from typing import Optional
 import numpy as np
 import numpy.typing as npt
 import streamlit as st
-from centrex_tlf_hamiltonian import hamiltonian, states, transitions
-import centrex_tlf_couplings as couplings
+from centrex_tlf import couplings, hamiltonian, states, transitions
 
 
 def get_transition_from_state(
@@ -32,7 +31,7 @@ def generate_hamiltonian(
     excited_select = states.QuantumSelector(J=J_excited, P=[-1, 1])
 
     QN_X = states.generate_coupled_states_X(ground_select)
-    QN_B = states.generate_coupled_states_B(excited_select)
+    QN_B = states.generate_coupled_states_B(excited_select, basis=states.Basis.CoupledP)
 
     possible_transitions = []
     for (idg, ground_state), (ide, excited_state) in itertools.product(

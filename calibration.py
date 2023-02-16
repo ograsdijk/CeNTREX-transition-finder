@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 import numpy as np
-from centrex_tlf_hamiltonian import transitions
+from centrex_tlf import transitions
 
 from hamiltonian_utils import SortedTransitions
 
@@ -23,6 +23,7 @@ Q2_F1_5_2_F_3 = CalibrationTransition(
 def get_offset(
     sorted_transitions: SortedTransitions, calibration: CalibrationTransition
 ) -> float:
+    # print(calibration.transition)
     idx_calibration = np.where(
         sorted_transitions.transitions == calibration.transition
     )[0][0]

@@ -2,7 +2,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from centrex_tlf_hamiltonian import transitions
+from centrex_tlf import transitions
 
 from hamiltonian_utils import SortedTransitions
 

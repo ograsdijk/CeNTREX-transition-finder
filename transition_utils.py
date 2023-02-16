@@ -1,7 +1,7 @@
 import fractions
 import re
 
-from centrex_tlf_hamiltonian import transitions
+from centrex_tlf import transitions
 
 
 def parse_transition(transition_name: str) -> transitions.OpticalTransition:
