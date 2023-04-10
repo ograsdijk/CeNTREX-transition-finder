@@ -3,7 +3,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from calibration import Q2_F1_5_2_F_3, get_offset
+from calibration import Q2_F1_5_2_F_3, R0_F1_1_2_F_1, get_offset
 from dataframe_utils import generate_dataframe
 from hamiltonian_utils import get_transitions
 from plot_utils import generate_plot
@@ -33,7 +33,7 @@ else:
 transition_names = [trans.name for trans in sorted_transitions.transitions]
 transition_names.sort()
 
-calibration = get_offset(sorted_transitions, Q2_F1_5_2_F_3)
+calibration = get_offset(sorted_transitions, R0_F1_1_2_F_1)
 
 with st.sidebar:
     st.title("Transition finder")

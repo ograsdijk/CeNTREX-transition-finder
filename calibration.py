@@ -19,6 +19,13 @@ Q2_F1_5_2_F_3 = CalibrationTransition(
     275848720,
 )
 
+R0_F1_1_2_F_1 = CalibrationTransition(
+    transitions.OpticalTransition(
+        transitions.OpticalTransitionType.R, J_ground=0, F1=1 / 2, F=1
+    ),
+    275848554,
+)
+
 
 def get_offset(
     sorted_transitions: SortedTransitions, calibration: CalibrationTransition
