@@ -15,14 +15,17 @@ st.set_page_config(page_title="CeNTREX Transitions")
 file_path = Path(__file__).parent.absolute()
 
 if "sorted_transitions" not in st.session_state:
-    sorted_transitions = get_transitions(
-        J_ground=[0, 1, 2, 3, 4, 5, 6, 7, 8], J_excited=[1, 2, 3, 4, 5, 6]
-    )
-    with open(file_path / "sorted_transitions.pkl", "wb") as f:
-        pickle.dump(sorted_transitions, f)
+    pickled_files = [file.stem for file in file_path.glob("*.pkl")]
+    if "sorted_transitions" in pickled_files:
+        with open(file_path / "sorted_transitions.pkl", "rb") as f:
+            sorted_transitions = pickle.load(f)
+    else:
+        sorted_transitions = get_transitions(
+            J_ground=[0, 1, 2, 3, 4, 5, 6, 7, 8], J_excited=[1, 2, 3, 4, 5, 6]
+        )
+        with open(file_path / "sorted_transitions.pkl", "wb") as f:
+            pickle.dump(sorted_transitions, f)
 
-    # with open(file_path / "sorted_transitions.pkl", "rb") as f:
-    #     sorted_transitions = pickle.load(f)
     st.session_state["sorted_transitions"] = sorted_transitions
 else:
     sorted_transitions = st.session_state["sorted_transitions"]
