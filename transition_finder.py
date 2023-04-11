@@ -3,13 +3,14 @@ from pathlib import Path
 
 import streamlit as st
 
+st.set_page_config(page_title="CeNTREX Transitions")
+
 from calibration import Q2_F1_5_2_F_3, R0_F1_1_2_F_1, get_offset
 from dataframe_utils import generate_dataframe
 from hamiltonian_utils import get_transitions
 from plot_utils import generate_plot
 from transition_utils import parse_transition
 
-st.set_page_config(page_title="CeNTREX Transitions")
 
 
 file_path = Path(__file__).parent.absolute()
