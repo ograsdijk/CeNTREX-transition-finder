@@ -7,11 +7,9 @@ st.set_page_config(page_title="CeNTREX Transitions")
 
 from calibration import Q2_F1_5_2_F_3, R0_F1_1_2_F_1, get_offset
 from dataframe_utils import generate_dataframe
-from hamiltonian_utils import get_transitions
+from hamiltonian_utils import SortedTransitions, get_transitions
 from plot_utils import generate_plot
 from transition_utils import parse_transition
-
-
 
 file_path = Path(__file__).parent.absolute()
 
@@ -19,7 +17,7 @@ if "sorted_transitions" not in st.session_state:
     pickled_files = [file.stem for file in file_path.glob("*.pkl")]
     if "sorted_transitions" in pickled_files:
         with open(file_path / "sorted_transitions.pkl", "rb") as f:
-            sorted_transitions = pickle.load(f)
+            sorted_transitions: SortedTransitions = pickle.load(f)
     else:
         sorted_transitions = get_transitions(
             J_ground=[0, 1, 2, 3, 4, 5, 6, 7, 8], J_excited=[1, 2, 3, 4, 5, 6]

@@ -7,24 +7,26 @@ import plotly.graph_objects as go
 import streamlit as st
 from centrex_tlf import transitions
 
-from calibration import Q2_F1_5_2_F_3, get_offset
-from hamiltonian_utils import SortedTransitions
+from calibration import Q2_F1_5_2_F_3, R0_F1_1_2_F_1, get_offset
+from hamiltonian_utils import SortedTransitions, get_transitions
 from spectrum_utils import find_overlap_searchsorted
-
-# from hamiltonian_utils import get_transitions
 
 st.set_page_config(page_title="CeNTREX Spectrum Matching")
 
 file_path = Path(__file__).parent.absolute()
 
 if "sorted_transitions" not in st.session_state:
-    # sorted_transitions = get_transitions(
-    #     J_ground=[0, 1, 2, 3, 4, 5, 6], J_excited=[1, 2, 3, 4, 5, 6]
-    # )
-    # with open(file_path / "sorted_transitions.pkl", "wb") as f:
-    #     pickle.dump(sorted_transitions, f)
-    with open("sorted_transitions.pkl", "rb") as f:
-        sorted_transitions: SortedTransitions = pickle.load(f)
+    pickled_files = [file.stem for file in file_path.glob("*.pkl")]
+    if "sorted_transitions" in pickled_files:
+        with open(file_path / "sorted_transitions.pkl", "rb") as f:
+            sorted_transitions: SortedTransitions = pickle.load(f)
+    else:
+        sorted_transitions = get_transitions(
+            J_ground=[0, 1, 2, 3, 4, 5, 6, 7, 8], J_excited=[1, 2, 3, 4, 5, 6]
+        )
+        with open(file_path / "sorted_transitions.pkl", "wb") as f:
+            pickle.dump(sorted_transitions, f)
+
     st.session_state["sorted_transitions"] = sorted_transitions
 else:
     sorted_transitions = st.session_state["sorted_transitions"]
@@ -32,7 +34,7 @@ else:
 transition_names = [trans.name for trans in sorted_transitions.transitions]
 transition_names.sort()
 
-calibration = get_offset(sorted_transitions, Q2_F1_5_2_F_3)
+calibration = get_offset(sorted_transitions, R0_F1_1_2_F_1)
 
 with st.sidebar:
     st.title("Spectrum matching")
