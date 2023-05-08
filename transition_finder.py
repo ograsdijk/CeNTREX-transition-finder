@@ -32,7 +32,9 @@ else:
 transition_names = [trans.name for trans in sorted_transitions.transitions]
 transition_names.sort()
 
-calibration = get_offset(sorted_transitions, R0_F1_1_2_F_1)
+calibration_transition = R0_F1_1_2_F_1
+
+calibration = get_offset(sorted_transitions, calibration_transition)
 
 with st.sidebar:
     st.title("Transition finder")
@@ -43,7 +45,13 @@ with st.sidebar:
     with col2:
         energy_max = st.number_input(label="MHz", value=300, min_value=0)
     ir_uv = st.selectbox(label="UV or IR", options=["IR", "UV"], index=0)
-    calculate_button = st.button("Calculate")
+    cesium_frequency = st.number_input(
+        label="Cesium Freqency [GHz]",
+        value=calibration_transition.cesium_frequency / 1e3,
+        step=1e-3,
+        format="%.3f",
+    )
+    calibration -= calibration_transition.cesium_frequency - cesium_frequency * 1e3
 
 
 def generate_plot_dataframe():
@@ -84,5 +92,4 @@ def generate_plot_dataframe():
     st.table(style)
 
 
-if calculate_button:
-    generate_plot_dataframe()
+generate_plot_dataframe()

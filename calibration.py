@@ -10,20 +10,23 @@ from hamiltonian_utils import SortedTransitions
 class CalibrationTransition:
     transition: transitions.OpticalTransition
     frequency: float  # Frequency in IR MHz
+    cesium_frequency: float  # Cesium Frequency in IR MHz
 
 
 Q2_F1_5_2_F_3 = CalibrationTransition(
-    transitions.OpticalTransition(
+    transition=transitions.OpticalTransition(
         transitions.OpticalTransitionType.Q, J_ground=2, F1=5 / 2, F=3
     ),
-    275848720,
+    frequency=275848738,
+    cesium_frequency=351730614,
 )
 
 R0_F1_1_2_F_1 = CalibrationTransition(
-    transitions.OpticalTransition(
+    transition=transitions.OpticalTransition(
         transitions.OpticalTransitionType.R, J_ground=0, F1=1 / 2, F=1
     ),
-    275848554,
+    frequency=275848556.92,
+    cesium_frequency=351730618.5313543,
 )
 
 
