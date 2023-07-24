@@ -13,7 +13,8 @@ def get_transition_from_state(
 ) -> Optional[transitions.OpticalTransition]:
     if couplings.utils.check_transition_coupled_allowed(ground_state, excited_state):
         ΔJ = excited_state.J - ground_state.J
-        if np.abs(ΔJ) > 1:
+        ΔJs = [val.value for val in transitions.OpticalTransitionType]
+        if (ΔJ > max(ΔJs)) or (ΔJ < min(ΔJs)):
             return None
         return transitions.OpticalTransition(
             transitions.OpticalTransitionType(ΔJ),
@@ -49,7 +50,9 @@ def generate_hamiltonian(
     QN_X = states.generate_coupled_states_X(ground_select)
     QN_B = states.generate_coupled_states_B(excited_select)
 
-    reduced_hamiltonian = hamiltonian.generate_total_reduced_hamiltonian(QN_X, QN_B)
+    reduced_hamiltonian = hamiltonian.generate_total_reduced_hamiltonian(
+        QN_X, QN_B, B=np.array([0, 0, 1e-3])
+    )
     return reduced_hamiltonian
 
 

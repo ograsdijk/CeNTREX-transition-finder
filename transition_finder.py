@@ -20,7 +20,8 @@ if "sorted_transitions" not in st.session_state:
             sorted_transitions: SortedTransitions = pickle.load(f)
     else:
         sorted_transitions = get_transitions(
-            J_ground=[0, 1, 2, 3, 4, 5, 6, 7, 8], J_excited=[1, 2, 3, 4, 5, 6]
+            J_ground=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            J_excited=[1, 2, 3, 4, 5, 6, 7, 8, 9],
         )
         with open(file_path / "sorted_transitions.pkl", "wb") as f:
             pickle.dump(sorted_transitions, f)

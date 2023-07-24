@@ -49,7 +49,6 @@ with st.sidebar:
 
 
 if calculate_button:
-
     if ir_uv == "UV":
         convert = 4
     else:

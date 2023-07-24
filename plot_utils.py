@@ -32,17 +32,21 @@ def generate_plot(
         (sorted_transitions.energies - offset) * convert <= energy_lim[1]
     )
 
+    colors = {
+        "O": "#9467bd",
+        "P": "#2ca02c",
+        "Q": "#ff7f0e",
+        "R": "#1f77b4",
+        "S": "#d62728",
+    }
+
     for trans, loc in zip(
         sorted_transitions.transitions[mask], sorted_transitions.energies[mask]
     ):
         if trans == transitions_interest:
             color = "black"
-        elif trans.t == transitions.OpticalTransitionType.R:
-            color = "#9467bd"
-        elif trans.t == transitions.OpticalTransitionType.Q:
-            color = "#ff7f0e"
-        elif trans.t == transitions.OpticalTransitionType.P:
-            color = "#2ca02c"
+        else:
+            color = colors.get(trans.t.name, "grey")
         fig.add_trace(
             go.Scatter(
                 x=(_energy + loc - offset) * convert,
@@ -56,7 +60,7 @@ def generate_plot(
             )
         )
 
-    for trans, color in [("R", "#9467bd"), ("Q", "#ff7f0e"), ("P", "#2ca02c")]:
+    for trans, color in colors.items():
         fig.add_trace(
             go.Scatter(
                 x=[np.nan], y=[np.nan], name=trans, mode="lines", line=dict(color=color)
