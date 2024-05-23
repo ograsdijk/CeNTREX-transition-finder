@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 from centrex_tlf import transitions
 
-from hamiltonian_utils import SortedTransitions
+from hamiltonian_utils import Transitions
 
 
 @dataclass
@@ -31,11 +31,11 @@ R0_F1_1_2_F_1 = CalibrationTransition(
 
 
 def get_offset(
-    sorted_transitions: SortedTransitions, calibration: CalibrationTransition
+    sorted_transitions: Transitions, calibration: CalibrationTransition
 ) -> float:
     # print(calibration.transition)
     idx_calibration = np.where(
         sorted_transitions.transitions == calibration.transition
     )[0][0]
-    offset = -sorted_transitions.energies[idx_calibration] + calibration.frequency
+    offset = -sorted_transitions.energies_mean[idx_calibration] + calibration.frequency
     return offset
