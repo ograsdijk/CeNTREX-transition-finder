@@ -60,10 +60,10 @@ def generate_hamiltonian(
 @dataclass
 class Transition:
     transition: transitions.OpticalTransition
-    energies: npt.NDArray[np.float_]
+    energies: npt.NDArray[np.float64]
     states_ground: list[states.State]
     states_excited: list[states.State]
-    coupling_elements: npt.NDArray[np.complex_]
+    coupling_elements: npt.NDArray[complex]
     photons: float
     br: pd.DataFrame
 
@@ -78,8 +78,8 @@ class Transitions:
 def get_transitions_from_hamiltonian(
     QN_X: list[states.CoupledBasisState],
     QN_B: list[states.CoupledBasisState],
-    H_X: npt.NDArray[np.complex_],
-    H_B: npt.NDArray[np.complex_],
+    H_X: npt.NDArray[complex],
+    H_B: npt.NDArray[complex],
 ) -> Transitions:
     _transitions: list[transitions.OpticalTransition] = []
     indices_ground: list[int] = []
@@ -147,10 +147,10 @@ def get_transitions_from_hamiltonian(
 def get_energies(
     indices_ground: list[int],
     indices_excited: list[int],
-    H_X: npt.NDArray[np.complex_],
-    H_B: npt.NDArray[np.complex_],
+    H_X: npt.NDArray[complex],
+    H_B: npt.NDArray[complex],
     convert_IR=True,
-) -> npt.NDArray[np.float_]:
+) -> npt.NDArray[np.float64]:
     if convert_IR:
         convert = 1 / 4
     else:
