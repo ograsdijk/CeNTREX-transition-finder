@@ -5,10 +5,11 @@ import pandas as pd
 from centrex_tlf import transitions
 
 from hamiltonian_utils import Transitions, unique_unsorted
+from transition_utils import format_transition_name
 
 
 def generate_dataframe_transitions(
-    transitions_interest: list[transitions.OpticalTransition],
+    transitions_interest: transitions.OpticalTransition,
     sorted_transitions: Transitions,
     energy_lim: tuple[float, float] = (-300, 300),
     ir_uv: str = "IR",
@@ -32,7 +33,7 @@ def generate_dataframe_transitions(
     df = pd.DataFrame(
         {
             "transition": [
-                trans.name for trans in sorted_transitions.transitions[mask]
+                format_transition_name(trans.name) for trans in sorted_transitions.transitions[mask]
             ],
             f"Δ frequency [{ir_uv}, MHz]": (energies - offset) * convert,
         }
@@ -41,11 +42,14 @@ def generate_dataframe_transitions(
         df[f"frequency [{ir_uv}, GHz]"] = (
             (df[f"Δ frequency [{ir_uv}, MHz]"] + offset + calibration) * convert / 1e3
         )
+    df["photons"] = [
+        trans.photons for trans in sorted_transitions.transitions_data[mask]
+    ]
     return df.set_index("transition")
 
 
 def generate_dataframe_branching(
-    transitions_interest: list[transitions.OpticalTransition],
+    transitions_interest: transitions.OpticalTransition,
     sorted_transitions: Transitions,
     energy_lim: tuple[float, float] = (-300, 300),
     ir_uv: str = "IR",
@@ -84,7 +88,7 @@ def generate_dataframe_branching(
     df = pd.DataFrame(
         {
             "transition": [
-                trans.name for trans in sorted_transitions.transitions[mask]
+                format_transition_name(trans.name) for trans in sorted_transitions.transitions[mask]
             ],
         }
     )

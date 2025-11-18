@@ -27,8 +27,12 @@ def get_transition_from_state(
 
 @st.cache_data
 def generate_hamiltonian(
-    J_ground: list[int] = [0, 1, 2, 3], J_excited: list[int] = [1, 2]
+    J_ground: list[int] = None, J_excited: list[int] = None
 ):
+    if J_ground is None:
+        J_ground = [0, 1, 2, 3]
+    if J_excited is None:
+        J_excited = [1, 2]
     ground_select = states.QuantumSelector(J=J_ground)
     excited_select = states.QuantumSelector(J=J_excited, P=[-1, 1])
 
@@ -174,8 +178,12 @@ def sort_transitions(
 
 
 def get_transitions(
-    J_ground: list[int] = [0, 1, 2, 3], J_excited: list[int] = [1, 2]
+    J_ground: list[int] = None, J_excited: list[int] = None
 ) -> Transitions:
+    if J_ground is None:
+        J_ground = [0, 1, 2, 3]
+    if J_excited is None:
+        J_excited = [1, 2]
     reduced_hamiltonian = generate_hamiltonian(J_ground, J_excited)
 
     nr_ground_states = len(reduced_hamiltonian.X_states)
@@ -196,7 +204,9 @@ def get_transitions(
     return sorted_transitions
 
 
-def unique_unsorted(trans: npt.NDArray) -> list[transitions.OpticalTransition]:
+def unique_unsorted(
+    trans: npt.NDArray[np.object_]
+) -> list[transitions.OpticalTransition]:
     unique: list[transitions.OpticalTransition] = []
     for t in trans:
         if t not in unique:

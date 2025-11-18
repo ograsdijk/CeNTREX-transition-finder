@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 import numpy.typing as npt
 import plotly.graph_objects as go
@@ -6,7 +8,10 @@ from centrex_tlf import transitions, utils
 from hamiltonian_utils import Transitions, unique_unsorted
 
 
-def gaussian(x, mu, sig):
+def gaussian(
+    x: npt.NDArray[np.float64], mu: float, sig: float
+) -> npt.NDArray[np.float64]:
+    """Calculate Gaussian lineshape."""
     return np.exp(-np.power(x - mu, 2.0) / (2 * np.power(sig, 2.0)))
 
 
@@ -18,6 +23,7 @@ def generate_plot(
     thermal_population: npt.NDArray[np.float64] = utils.population.thermal_population(
         np.arange(10), T=6.5
     ),
+    transition_types: Optional[list[str]] = None,
 ) -> go.Figure:
     if ir_uv == "IR":
         convert = 1
@@ -48,6 +54,10 @@ def generate_plot(
     for trans, trans_data in zip(
         sorted_transitions.transitions[mask], sorted_transitions.transitions_data[mask]
     ):
+        # Filter by transition type if specified
+        if transition_types and trans.name[0] not in transition_types:
+            continue
+
         coupling_elements = trans_data.coupling_elements
         mask_nonzero = coupling_elements != 0
         energy = trans_data.energies[mask_nonzero].mean()
@@ -92,14 +102,8 @@ def generate_plot(
     fig.update_layout(
         title="Frequency scan",
         xaxis_title=f"frequency [{ir_uv}, MHz]",
-        # yaxis_title="fluorescence [arb]",
         legend_title="Transition type",
         font=dict(size=14),
-        # font=dict(
-        #     family="Courier New, monospace",
-        #     size=18,
-        #     color="RebeccaPurple"
-        # )
+        showlegend=True,
     )
-    fig.update_layout(showlegend=True)
     return fig
