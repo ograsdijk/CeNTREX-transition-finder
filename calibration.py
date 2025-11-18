@@ -15,7 +15,7 @@ class CalibrationTransition:
 
 Q2_F1_5_2_F_3 = CalibrationTransition(
     transition=transitions.OpticalTransition(
-        transitions.OpticalTransitionType.Q, J_ground=2, F1=5 / 2, F=3
+        transitions.OpticalTransitionType.Q, J_ground=2, F1_excited=5 / 2, F_excited=3
     ),
     frequency=275848738,
     cesium_frequency=351730614,
@@ -23,7 +23,7 @@ Q2_F1_5_2_F_3 = CalibrationTransition(
 
 R0_F1_1_2_F_1 = CalibrationTransition(
     transition=transitions.OpticalTransition(
-        transitions.OpticalTransitionType.R, J_ground=0, F1=1 / 2, F=1
+        transitions.OpticalTransitionType.R, J_ground=0, F1_excited=1 / 2, F_excited=1
     ),
     frequency=275848556.92,
     cesium_frequency=351730618.5313543,

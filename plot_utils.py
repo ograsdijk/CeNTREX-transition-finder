@@ -15,7 +15,7 @@ def generate_plot(
     sorted_transitions: Transitions,
     energy_lim: tuple[float, float] = (-300, 300),
     ir_uv: str = "IR",
-    thermal_population: npt.NDArray[np.float_] = utils.population.thermal_population(
+    thermal_population: npt.NDArray[np.float64] = utils.population.thermal_population(
         np.arange(10), T=6.5
     ),
 ) -> go.Figure:
