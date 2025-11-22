@@ -1,16 +1,15 @@
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
 from centrex_tlf import transitions
 
-from hamiltonian_utils import Transitions, unique_unsorted
-from transition_utils import format_transition_name
+from generate_transitions import Transition
 
 
 def generate_dataframe_transitions(
-    transitions_interest: transitions.OpticalTransition,
-    sorted_transitions: Transitions,
+    transition_interest: transitions.OpticalTransition,
+    sorted_transitions: Sequence[Transition],
     energy_lim: tuple[float, float] = (-300, 300),
     ir_uv: str = "IR",
     calibration: Optional[float] = None,
@@ -20,37 +19,47 @@ def generate_dataframe_transitions(
     else:
         convert = 4
 
-    indices_center = np.where(sorted_transitions.transitions == transitions_interest)[0]
-
-    offset = sorted_transitions.energies_mean[indices_center]
-
-    mask = ((sorted_transitions.energies_mean - offset) * convert >= energy_lim[0]) & (
-        (sorted_transitions.energies_mean - offset) * convert <= energy_lim[1]
+    idx_center = next(
+        (
+            idx
+            for idx, obj in enumerate(sorted_transitions)
+            if obj.transition == transition_interest
+        ),
+        None,  # default if not found
     )
+    if idx_center is None:
+        raise ValueError("Transition of interest not found in transitions list.")
 
-    energies = sorted_transitions.energies_mean[mask]
+    offset = sorted_transitions[idx_center].weighted_energy
+    energies = np.array([trans.weighted_energy for trans in sorted_transitions])
+
+    indices_select = np.nonzero(
+        ((energies - offset) * convert >= energy_lim[0])
+        & ((energies - offset) * convert <= energy_lim[1])
+    )[0]
+
+    selected_transitions: list[Transition] = [
+        sorted_transitions[i] for i in indices_select
+    ]
+    selected_energies = energies[indices_select]
 
     df = pd.DataFrame(
         {
-            "transition": [
-                format_transition_name(trans.name) for trans in sorted_transitions.transitions[mask]
-            ],
-            f"Δ frequency [{ir_uv}, MHz]": (energies - offset) * convert,
+            "transition": [trans.transition.name for trans in selected_transitions],
+            f"Δ frequency [{ir_uv}, MHz]": (selected_energies - offset) * convert,
         }
     )
     if calibration is not None:
         df[f"frequency [{ir_uv}, GHz]"] = (
             (df[f"Δ frequency [{ir_uv}, MHz]"] + offset + calibration) * convert / 1e3
         )
-    df["photons"] = [
-        trans.photons for trans in sorted_transitions.transitions_data[mask]
-    ]
+    df["photons"] = [trans.nphotons for trans in selected_transitions]
     return df.set_index("transition")
 
 
 def generate_dataframe_branching(
-    transitions_interest: transitions.OpticalTransition,
-    sorted_transitions: Transitions,
+    transition_interest: transitions.OpticalTransition,
+    sorted_transitions: Sequence[Transition],
     energy_lim: tuple[float, float] = (-300, 300),
     ir_uv: str = "IR",
 ) -> pd.DataFrame:
@@ -59,37 +68,46 @@ def generate_dataframe_branching(
     else:
         convert = 4
 
-    indices_center = np.where(sorted_transitions.transitions == transitions_interest)[0]
-
-    offset = sorted_transitions.energies_mean[indices_center]
-
-    mask = ((sorted_transitions.energies_mean - offset) * convert >= energy_lim[0]) & (
-        (sorted_transitions.energies_mean - offset) * convert <= energy_lim[1]
+    idx_center = next(
+        (
+            idx
+            for idx, obj in enumerate(sorted_transitions)
+            if obj.transition == transition_interest
+        ),
+        None,  # default if not found
     )
+    if idx_center is None:
+        raise ValueError("Transition of interest not found in transitions list.")
 
-    Js = np.unique(
-        [
-            item
-            for row in [
-                [int(trans.br.iloc[i].name[-2]) for i in range(len(trans.br))]
-                for trans in sorted_transitions.transitions_data[mask]
-            ]
-            for item in row
-        ]
-    )
+    offset = sorted_transitions[idx_center].weighted_energy
+    energies = np.array([trans.weighted_energy for trans in sorted_transitions])
 
-    branching = np.zeros((mask.sum(), Js.size))
-    for idt, trans in enumerate(sorted_transitions.transitions_data[mask]):
+    indices_select = np.nonzero(
+        ((energies - offset) * convert >= energy_lim[0])
+        & ((energies - offset) * convert <= energy_lim[1])
+    )[0]
+
+    selected_transitions: list[Transition] = [
+        sorted_transitions[i] for i in indices_select
+    ]
+
+    Js = np.unique([list(trans.branching.keys()) for trans in selected_transitions])
+
+    branching = np.zeros((len(selected_transitions), Js.size))
+    for idt, trans in enumerate(selected_transitions):
         br = np.zeros(Js.shape)
-        dat = [(i, int(trans.br.iloc[i].name[-2])) for i in range(len(trans.br))]
+        dat = [(i, J) for i, J in enumerate(trans.branching.keys())]
         for i, Ji in dat:
-            br[np.where(Js == Ji)] = trans.br.iloc[i].values
+            if trans.branching is not None:
+                br[np.where(Js == Ji)] = trans.branching[Ji]
+            else:
+                br[np.where(Js == Ji)] = np.nan
+
         branching[idt] = br
+
     df = pd.DataFrame(
         {
-            "transition": [
-                format_transition_name(trans.name) for trans in sorted_transitions.transitions[mask]
-            ],
+            "transition": [trans.transition.name for trans in selected_transitions],
         }
     )
     for idj, Ji in enumerate(Js):

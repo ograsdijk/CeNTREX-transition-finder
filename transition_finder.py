@@ -2,6 +2,7 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import streamlit as st
 from centrex_tlf import utils
 
@@ -9,9 +10,9 @@ st.set_page_config(page_title="CeNTREX Transitions")
 
 from calibration import R0_F1_1_2_F_1, get_offset
 from dataframe_utils import generate_dataframe_branching, generate_dataframe_transitions
-from hamiltonian_utils import Transitions, get_transitions
+from generate_transitions import Transition
 from plot_utils import generate_plot
-from transition_utils import parse_transition, format_transition_name
+from utils import parse_transition
 
 file_path = Path(__file__).parent.absolute()
 
@@ -19,21 +20,17 @@ if "sorted_transitions" not in st.session_state:
     pickled_files = [file.stem for file in file_path.glob("*.pkl")]
     if "sorted_transitions" in pickled_files:
         with open(file_path / "sorted_transitions.pkl", "rb") as f:
-            sorted_transitions: Transitions = pickle.load(f)
+            sorted_transitions: list[Transition] = pickle.load(f)
         print("opened file")
     else:
-        sorted_transitions = get_transitions(
-            J_ground=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            J_excited=[1, 2, 3, 4, 5, 6, 7, 8, 9],
+        raise RuntimeError(
+            "No precomputed transitions found. Please run 'compute_transitions.py' to generate the required data."
         )
-        with open(file_path / "sorted_transitions.pkl", "wb") as f:
-            pickle.dump(sorted_transitions, f)
-
     st.session_state["sorted_transitions"] = sorted_transitions
 else:
     sorted_transitions = st.session_state["sorted_transitions"]
 
-transition_names = np.unique([format_transition_name(trans.name) for trans in sorted_transitions.transitions])
+transition_names = np.unique([trans.transition.name for trans in sorted_transitions])
 transition_names.sort()
 
 calibration_transition = R0_F1_1_2_F_1
@@ -42,6 +39,7 @@ calibration = get_offset(sorted_transitions, calibration_transition)
 # Constants
 IR_UV_CONVERSION_FACTOR = 4
 DEFAULT_ENERGY_RANGE = 300
+
 
 # Initialize session state
 def initialize_session_state():
@@ -55,15 +53,24 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
+
 initialize_session_state()
+
 
 def adjust_energy_range_for_mode(new_mode: str) -> None:
     """Adjust energy range when switching between IR and UV modes."""
     if st.session_state["prev_ir_uv"] != new_mode:
-        factor = IR_UV_CONVERSION_FACTOR if new_mode == "UV" else 1 / IR_UV_CONVERSION_FACTOR
-        st.session_state["energy_min_val"] = int(st.session_state["energy_min_val"] * factor)
-        st.session_state["energy_max_val"] = int(st.session_state["energy_max_val"] * factor)
+        factor = (
+            IR_UV_CONVERSION_FACTOR if new_mode == "UV" else 1 / IR_UV_CONVERSION_FACTOR
+        )
+        st.session_state["energy_min_val"] = int(
+            st.session_state["energy_min_val"] * factor
+        )
+        st.session_state["energy_max_val"] = int(
+            st.session_state["energy_max_val"] * factor
+        )
         st.session_state["prev_ir_uv"] = new_mode
+
 
 with st.sidebar:
     st.title("Transition finder")
@@ -101,7 +108,7 @@ with st.sidebar:
 
 
 def generate_plot_dataframe():
-    thermal_population = utils.population.thermal_population(
+    thermal_population: npt.NDArray[np.floating] = utils.population.thermal_population(
         np.arange(11), T=rotational_temperature
     )
     error = False
@@ -112,26 +119,28 @@ def generate_plot_dataframe():
         st.error("Set valid energy span")
         error = True
     if transition_types and transition_selector[0] not in transition_types:
-        st.error(f"Selected transition type '{transition_selector[0]}' is not in the filter. Please select '{transition_selector[0]}' in Transition Types.")
+        st.error(
+            f"Selected transition type '{transition_selector[0]}' is not in the filter. Please select '{transition_selector[0]}' in Transition Types."
+        )
         error = True
     if error:
         return
 
-    transitions_parsed = parse_transition(transition_selector)
+    transition_parsed = parse_transition(transition_selector)
 
     fig = generate_plot(
-        transitions_parsed,
+        transition_parsed,
         sorted_transitions,
+        thermal_population,
         (energy_min, energy_max),
         ir_uv,
-        thermal_population,
         transition_types,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     df = generate_dataframe_transitions(
-        transitions_parsed,
+        transition_parsed,
         sorted_transitions,
         (energy_min, energy_max),
         ir_uv,
@@ -153,9 +162,8 @@ def generate_plot_dataframe():
     )
 
     st.table(style)
-
     df = generate_dataframe_branching(
-        transitions_parsed,
+        transition_parsed,
         sorted_transitions,
         (energy_min, energy_max),
         ir_uv,

@@ -1,0 +1,17 @@
+[project]
+name = "centrex-transition-finder"
+version = "0.1.0"
+description = "Utilities and small Streamlit app to find CeNTREX transitions"
+readme = "README.md"
+requires-python = ">=3.11"
+
+# Keep dependencies declared here for UV to manage them. You can also use
+# `uv add` to migrate dependencies from `requirements.txt`.
+dependencies = [
+    "streamlit",
+    "pandas",
+    "plotly",
+    "numpy",
+    "scipy",
+    "centrex-tlf"
+]

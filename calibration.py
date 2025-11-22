@@ -1,9 +1,9 @@
 from dataclasses import dataclass
+from typing import Sequence
 
-import numpy as np
 from centrex_tlf import transitions
 
-from hamiltonian_utils import Transitions
+from generate_transitions import Transition
 
 
 @dataclass
@@ -31,11 +31,19 @@ R0_F1_1_2_F_1 = CalibrationTransition(
 
 
 def get_offset(
-    sorted_transitions: Transitions, calibration: CalibrationTransition
+    sorted_transitions: Sequence[Transition], calibration: CalibrationTransition
 ) -> float:
-    # print(calibration.transition)
-    idx_calibration = np.where(
-        sorted_transitions.transitions == calibration.transition
-    )[0][0]
-    offset = -sorted_transitions.energies_mean[idx_calibration] + calibration.frequency
+    idx_calibration = next(
+        (
+            idx
+            for idx, obj in enumerate(sorted_transitions)
+            if obj.transition == calibration.transition
+        ),
+        None,  # default if not found
+    )
+    if idx_calibration is None:
+        raise ValueError("Calibration transition not found in transitions list.")
+    offset = (
+        -sorted_transitions[idx_calibration].weighted_energy + calibration.frequency
+    )
     return offset

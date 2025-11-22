@@ -1,5 +1,5 @@
 # CeNTREX-transition-finder
- 
+
 Docker file to run the transition finder.
 Build the image with:
 ```
