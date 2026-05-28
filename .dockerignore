@@ -1,0 +1,9 @@
+.git
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vscode/
+__pycache__/
+tests/
+hamiltonian.pkl
+sorted_transitions.pkl

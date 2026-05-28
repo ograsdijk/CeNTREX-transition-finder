@@ -1,24 +1,18 @@
-# app/Dockerfile
-
-FROM python:3.13.3
+FROM python:3.13-slim-bookworm
 
 EXPOSE 8501
 
 WORKDIR /app
-RUN echo "deb http://ftp.debian.org/debian bookworm main" > /etc/apt/sources.list
+
 RUN apt-get update && apt-get install -y \
     build-essential \
-    software-properties-common \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+RUN pip install --no-cache-dir uv
 
-RUN git clone https://github.com/ograsdijk/CeNTREX-TlF.git centrex_TlF
+COPY . /app
 
-RUN pip3 install ./centrex_TlF
+RUN uv sync --frozen --no-dev
 
-RUN git clone https://github.com/zhouperry/CeNTREX-transition-finder.git transition_finder
-
-RUN pip3 install -r ./transition_finder/requirements.txt
-
-ENTRYPOINT ["streamlit", "run", "./transition_finder/transition_finder.py", "--server.port=8501", "--server.address=0.0.0.0"]
+ENTRYPOINT ["uv", "run", "streamlit", "run", "transition_finder.py", "--server.port=8501", "--server.address=0.0.0.0"]

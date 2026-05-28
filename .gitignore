@@ -120,6 +120,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local generated artifacts not kept in git
+hamiltonian.pkl
+sorted_transitions.pkl
+
 # Spyder project settings
 .spyderproject
 .spyproject
