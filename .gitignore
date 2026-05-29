@@ -123,6 +123,7 @@ venv.bak/
 # Local generated artifacts not kept in git
 hamiltonian.pkl
 sorted_transitions.pkl
+transition_grid.pkl
 
 # Spyder project settings
 .spyderproject

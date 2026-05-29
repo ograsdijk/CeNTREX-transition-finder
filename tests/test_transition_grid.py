@@ -10,13 +10,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from transition_grid import (
     E1_POLARIZATION_VECTORS,
+    POLARIZATION_STRENGTH_COLUMNS,
     _assign_labels_by_overlap,
     _build_e1_operator_matrices,
     _build_hamiltonian_sequences,
+    _polarization_strength_matrices,
     _build_tracked_manifold,
     _build_transition_candidates,
     _coupling_matrices_for_field,
     _line_records_for_slice,
+    apply_polarization_selection,
     build_transition_grid,
     cluster_transition_components,
     enrich_cluster_display_fields,
@@ -336,9 +339,12 @@ def test_generate_cluster_dataframe_uses_weighted_reference_centroid():
 
 def test_line_records_convert_uv_hamiltonian_frequency_to_ir():
     component_strengths = {
+        "all": np.array([[1.0]]),
         "x": np.array([[0.25]]),
         "y": np.array([[0.25]]),
         "z": np.array([[0.50]]),
+        "sigma_plus": np.array([[0.10]]),
+        "sigma_minus": np.array([[0.40]]),
     }
     records = _line_records_for_slice(
         ez_v_cm=0.0,
@@ -362,6 +368,40 @@ def test_line_records_convert_uv_hamiltonian_frequency_to_ir():
     )
 
     assert records[0]["frequency_ir_mhz"] == 100.0
+
+
+def test_polarization_strength_matrices_include_coherent_sigma_components():
+    x = np.array([[1.0 + 0.0j, 1.0 + 0.0j]])
+    y = np.array([[0.0 + 1.0j, 0.0 - 1.0j]])
+    z = np.array([[2.0 + 0.0j, 0.0 + 0.0j]])
+    strengths = _polarization_strength_matrices({"x": x, "y": y, "z": z})
+
+    assert np.allclose(strengths["all"], [[6.0, 2.0]])
+    assert np.allclose(strengths["sigma_plus"], [[2.0, 0.0]])
+    assert np.allclose(strengths["sigma_minus"], [[0.0, 2.0]])
+
+
+def test_apply_polarization_selection_reweights_and_filters_lines():
+    lines = pd.DataFrame(
+        [
+            {"strength": 3.0, "strength_all": 3.0, "strength_z": 0.0},
+            {"strength": 1.0, "strength_all": 1.0, "strength_z": 0.5},
+        ]
+    )
+
+    selected = apply_polarization_selection(lines, "Z", coupling_cutoff=1e-14)
+
+    assert list(POLARIZATION_STRENGTH_COLUMNS) == [
+        "All",
+        "X",
+        "Y",
+        "Z",
+        "sigma+",
+        "sigma-",
+    ]
+    assert len(selected) == 1
+    assert selected.iloc[0]["strength"] == 0.5
+    assert selected.iloc[0]["polarization"] == "Z"
 
 
 def test_operator_matrix_couplings_match_direct_mixed_state_calls():
@@ -435,6 +475,9 @@ def test_tiny_grid_precompute_filters_forbidden_mf_and_e2():
         grid_slice.lines[["strength_x", "strength_y", "strength_z"]].sum(axis=1),
         grid_slice.lines["strength"],
     )
+    assert np.allclose(grid_slice.lines["strength_all"], grid_slice.lines["strength"])
+    assert "strength_sigma_plus" in grid_slice.lines.columns
+    assert "strength_sigma_minus" in grid_slice.lines.columns
     assert "mF_ground" in grid_slice.lines.columns
     assert "mF_excited" in grid_slice.lines.columns
     assert "excited_parent_parity" in grid_slice.lines.columns

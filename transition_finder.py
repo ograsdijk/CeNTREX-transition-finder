@@ -9,7 +9,9 @@ from calibration import R0_F1_1_2_F_1
 from plot_utils import generate_grid_plot
 from transition_grid import (
     GRID_ARTIFACT,
+    POLARIZATION_STRENGTH_COLUMNS,
     TransitionGrid,
+    apply_polarization_selection,
     cluster_transition_components,
     enrich_cluster_display_fields,
     format_cluster_dataframe,
@@ -51,7 +53,9 @@ def adjust_energy_range_for_mode(new_mode: str) -> None:
         st.session_state["prev_ir_uv"] = new_mode
 
 
-def calibration_offset_from_grid(grid: TransitionGrid, cesium_frequency_ghz: float) -> float:
+def calibration_offset_from_grid(
+    grid: TransitionGrid, cesium_frequency_ghz: float
+) -> float:
     zero_slice = grid.closest_slice(0.0)
     calibration_transition = R0_F1_1_2_F_1
     selected = zero_slice.lines[
@@ -82,11 +86,11 @@ def render_grid_app() -> None:
     grid = st.session_state["transition_grid"]
     metadata = getattr(grid, "metadata", {})
     if (
-        metadata.get("schema_version", 0) < 3
+        metadata.get("schema_version", 0) < 4
         or metadata.get("frequency_units") != "IR MHz"
     ):
         st.error(
-            "transition_grid.pkl was generated with an old frequency convention. "
+            "transition_grid.pkl was generated with an old grid schema. "
             "Rerun 'uv run python compute_transitions.py' to rebuild it."
         )
         return
@@ -104,9 +108,18 @@ def render_grid_app() -> None:
             step=0.5,
             format="%.1f",
         )
+        polarization = st.selectbox(
+            label="Polarization",
+            options=list(POLARIZATION_STRENGTH_COLUMNS),
+            index=0,
+        )
         grid_slice = grid.closest_slice(float(ez_v_cm))
+        selected_lines = apply_polarization_selection(grid_slice.lines, polarization)
+        if selected_lines.empty:
+            st.error(f"No allowed E1 state pairs remain for {polarization} polarization.")
+            return
         clusters, cluster_lines = cluster_transition_components(
-            grid_slice.lines,
+            selected_lines,
             resolving_frequency_mhz=float(resolving_frequency),
             include_cluster_lines=True,
         )
@@ -178,7 +191,8 @@ def render_grid_app() -> None:
     df = format_cluster_dataframe(visible_clusters, ir_uv)
     table_source_df = df.reset_index()
     summary_table_key = (
-        f"cluster_summary::{float(ez_v_cm):g}::{float(resolving_frequency):g}::{ir_uv}::{transition_selector}"
+        f"cluster_summary::{float(ez_v_cm):g}::{float(resolving_frequency):g}::"
+        f"{polarization}::{ir_uv}::{transition_selector}"
     )
     table_state = st.session_state.get(summary_table_key, {})
     selected_rows = table_state.get("selection", {}).get("rows", [])
@@ -228,7 +242,9 @@ def render_grid_app() -> None:
             f"frequency [{ir_uv}, GHz]"
         ].map(lambda value: f"{value:.3f}")
     if "strength" in summary_df.columns:
-        summary_df["strength"] = summary_df["strength"].map(lambda value: f"{value:.3e}")
+        summary_df["strength"] = summary_df["strength"].map(
+            lambda value: f"{value:.3e}"
+        )
 
     st.dataframe(
         summary_df,
@@ -283,7 +299,8 @@ def render_grid_app() -> None:
         st.dataframe(detail_df, hide_index=True, width="stretch")
     st.caption(
         f"Ez={grid_slice.ez_v_cm:g} V/cm, "
-        f"{len(grid_slice.lines)} allowed E1 state pairs before clustering. "
+        f"{len(selected_lines)} {polarization} E1 state pairs before clustering "
+        f"({len(grid_slice.lines)} in All). "
         "Main table shows only the compact summary; expand below for span, pair counts, "
         "estimated photons, full parent labels, and full mF detail."
     )

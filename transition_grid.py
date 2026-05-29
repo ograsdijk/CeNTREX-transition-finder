@@ -27,6 +27,15 @@ GRID_ARTIFACT = "transition_grid.pkl"
 DEFAULT_EZ_VALUES = np.arange(0.0, 500.0 + 25.0, 25.0)
 DEFAULT_B_FIELD = np.array([0.0, 0.0, 1e-3], dtype=float)
 UV_TO_IR_FREQUENCY = 0.25
+DEFAULT_COUPLING_CUTOFF = 1e-14
+POLARIZATION_STRENGTH_COLUMNS = {
+    "All": "strength_all",
+    "X": "strength_x",
+    "Y": "strength_y",
+    "Z": "strength_z",
+    "sigma+": "strength_sigma_plus",
+    "sigma-": "strength_sigma_minus",
+}
 E1_POLARIZATION_VECTORS = {
     "x": np.array([1.0, 0.0, 0.0], dtype=complex),
     "y": np.array([0.0, 1.0, 0.0], dtype=complex),
@@ -89,6 +98,30 @@ def save_transition_grid(
     with open(tmp_path, "wb") as f:
         pickle.dump(grid, f)
     tmp_path.replace(path)
+
+
+def apply_polarization_selection(
+    lines: pd.DataFrame,
+    polarization: str,
+    coupling_cutoff: float = DEFAULT_COUPLING_CUTOFF,
+) -> pd.DataFrame:
+    if polarization not in POLARIZATION_STRENGTH_COLUMNS:
+        options = ", ".join(POLARIZATION_STRENGTH_COLUMNS)
+        raise ValueError(f"Unknown polarization {polarization!r}; expected one of {options}.")
+    if lines.empty:
+        return lines.copy()
+
+    strength_column = POLARIZATION_STRENGTH_COLUMNS[polarization]
+    if strength_column not in lines.columns:
+        raise ValueError(
+            f"Grid does not contain {strength_column!r}. Rebuild {GRID_ARTIFACT}."
+        )
+
+    selected = lines.copy()
+    selected["strength"] = selected[strength_column].to_numpy(dtype=float)
+    selected = selected[selected["strength"] > coupling_cutoff].copy()
+    selected["polarization"] = polarization
+    return selected.reset_index(drop=True)
 
 
 def _field_vector(ez_v_cm: float) -> npt.NDArray[np.float64]:
@@ -311,6 +344,26 @@ def _incoherent_strength_matrix(
     return strength
 
 
+def _polarization_strength_matrices(
+    coupling_matrices: dict[str, npt.NDArray[np.complex128]],
+) -> dict[str, npt.NDArray[np.float64]]:
+    x_coupling = coupling_matrices["x"]
+    y_coupling = coupling_matrices["y"]
+    z_coupling = coupling_matrices["z"]
+    sigma_plus_coupling = (-x_coupling + 1j * y_coupling) / np.sqrt(2)
+    sigma_minus_coupling = (x_coupling + 1j * y_coupling) / np.sqrt(2)
+    return {
+        "all": np.abs(x_coupling) ** 2
+        + np.abs(y_coupling) ** 2
+        + np.abs(z_coupling) ** 2,
+        "x": np.abs(x_coupling) ** 2,
+        "y": np.abs(y_coupling) ** 2,
+        "z": np.abs(z_coupling) ** 2,
+        "sigma_plus": np.abs(sigma_plus_coupling) ** 2,
+        "sigma_minus": np.abs(sigma_minus_coupling) ** 2,
+    }
+
+
 def _transition_from_zero_labels(
     ground_label: CoupledBasisState,
     excited_label: CoupledBasisState,
@@ -416,9 +469,16 @@ def _line_records_for_slice(
                     * UV_TO_IR_FREQUENCY
                 ),
                 "strength": strength,
+                "strength_all": float(component_strengths["all"][excited_id, ground_id]),
                 "strength_x": float(component_strengths["x"][excited_id, ground_id]),
                 "strength_y": float(component_strengths["y"][excited_id, ground_id]),
                 "strength_z": float(component_strengths["z"][excited_id, ground_id]),
+                "strength_sigma_plus": float(
+                    component_strengths["sigma_plus"][excited_id, ground_id]
+                ),
+                "strength_sigma_minus": float(
+                    component_strengths["sigma_minus"][excited_id, ground_id]
+                ),
                 "nphotons": nphotons,
                 "branching": branching,
                 "ground_largest_current": x_largest_current[ground_id],
@@ -434,7 +494,7 @@ def build_transition_grid(
     excited_js: Sequence[int] = tuple(range(1, 11)),
     b_field: npt.NDArray[np.float64] = DEFAULT_B_FIELD,
     excited_j_padding: int = 2,
-    coupling_cutoff: float = 1e-14,
+    coupling_cutoff: float = DEFAULT_COUPLING_CUTOFF,
     progress: bool = True,
 ) -> TransitionGrid:
     ez_array = np.asarray(ez_values, dtype=np.float64)
@@ -480,11 +540,8 @@ def build_transition_grid(
             x_eigenvectors[idx],
             b_eigenvectors[idx],
         )
-        component_strengths = {
-            name: np.abs(coupling_matrix) ** 2
-            for name, coupling_matrix in coupling_matrices.items()
-        }
-        strength_matrix = _incoherent_strength_matrix(coupling_matrices)
+        component_strengths = _polarization_strength_matrices(coupling_matrices)
+        strength_matrix = component_strengths["all"]
         matrix_coupling_s = time.perf_counter() - t0
 
         t0 = time.perf_counter()
@@ -544,12 +601,12 @@ def build_transition_grid(
             )
 
     metadata = {
-        "schema_version": 3,
+        "schema_version": 4,
         "ground_js": list(map(int, ground_js)),
         "excited_js": list(map(int, excited_js)),
         "b_field_gauss": [float(v) for v in b_field],
         "branches": ["P", "Q", "R"],
-        "polarization": "incoherent E1 sum over x,y,z components",
+        "polarization": "all, X, Y, Z, sigma+ and sigma- strengths about lab z",
         "frequency_units": "IR MHz",
         "uv_to_ir_frequency_factor": UV_TO_IR_FREQUENCY,
         "excited_construction_j_padding": int(excited_j_padding),
@@ -789,7 +846,11 @@ def enrich_cluster_display_fields(
     cluster_lines: pd.DataFrame,
     include_full_detail: bool = False,
 ) -> pd.DataFrame:
-    if clusters.empty or cluster_lines.empty or "cluster_id" not in cluster_lines.columns:
+    if (
+        clusters.empty
+        or cluster_lines.empty
+        or "cluster_id" not in cluster_lines.columns
+    ):
         return clusters.copy()
 
     selected_ids = clusters["cluster_id"].to_numpy(dtype=int)
@@ -806,7 +867,9 @@ def enrich_cluster_display_fields(
         }
         if include_full_detail:
             labels = (
-                part["excited_label"].tolist() if "excited_label" in part.columns else []
+                part["excited_label"].tolist()
+                if "excited_label" in part.columns
+                else []
             )
             record["excited_parent_label"] = _summarize_parent_labels(labels)
             record["mf_detail"] = _mf_detail_summary(breakdown)

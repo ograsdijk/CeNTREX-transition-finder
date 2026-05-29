@@ -29,7 +29,9 @@ def generate_grid_plot(
         "Q": "#ff7f0e",
         "R": "#1f77b4",
     }
-    selected_cluster_ids = set() if selected_cluster_ids is None else selected_cluster_ids
+    selected_cluster_ids = (
+        set() if selected_cluster_ids is None else selected_cluster_ids
+    )
     has_selection = len(selected_cluster_ids) > 0
 
     for _, row in visible_clusters.iterrows():
