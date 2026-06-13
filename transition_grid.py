@@ -234,6 +234,7 @@ def _state_strings_by_overlap(
     eigenvectors: npt.NDArray[np.complex128],
     label_basis: Sequence[CoupledBasisState],
     construction_basis: Sequence[CoupledBasisState],
+    label_strings: Sequence[str] | None = None,
 ) -> list[str]:
     label_vectors = np.asarray(
         [_state_vector_for_label(label, construction_basis) for label in label_basis],
@@ -241,7 +242,22 @@ def _state_strings_by_overlap(
     )
     overlap = np.abs(label_vectors.conj() @ eigenvectors).astype(np.float64)
     label_ids = np.argmax(overlap, axis=0)
-    return _state_strings([label_basis[int(label_id)] for label_id in label_ids])
+    if label_strings is None:
+        label_strings = _state_strings(label_basis)
+    return [label_strings[int(label_id)] for label_id in label_ids]
+
+
+def _dominant_uncoupled_mj_values(
+    eigenvectors: npt.NDArray[np.complex128],
+    coupled_to_uncoupled_transform: npt.NDArray[np.complex128],
+    uncoupled_basis: Sequence[object],
+) -> npt.NDArray[np.int_]:
+    uncoupled_vectors = coupled_to_uncoupled_transform @ eigenvectors
+    component_ids = np.argmax(np.abs(uncoupled_vectors), axis=0)
+    return np.asarray(
+        [int(getattr(uncoupled_basis[int(component_id)], "mJ")) for component_id in component_ids],
+        dtype=int,
+    )
 
 
 def _omega_basis_from_parity_labels(
@@ -261,7 +277,9 @@ def _build_hamiltonian_sequences(
     excited_js: Sequence[int],
     excited_j_padding: int = 2,
 ) -> tuple[
+    list[object],
     list[CoupledBasisState],
+    npt.NDArray[np.complex128],
     list[CoupledBasisState],
     list[CoupledBasisState],
     npt.NDArray[np.complex128],
@@ -296,7 +314,9 @@ def _build_hamiltonian_sequences(
         b_matrices.append(b_func(e_field, b_field))
 
     return (
+        list(x_uncoupled),
         list(x_basis),
+        x_transform,
         list(b_basis),
         list(b_label_basis),
         np.asarray(x_matrices),
@@ -388,13 +408,15 @@ def _build_transition_candidates(
     b_zero_labels: Sequence[CoupledBasisState],
 ) -> list[dict[str, object]]:
     candidates: list[dict[str, object]] = []
+    ground_metas = [_state_label(label) for label in x_zero_labels]
+    excited_metas = [_state_label(label) for label in b_zero_labels]
     for ground_id, ground_label in enumerate(x_zero_labels):
-        ground_meta = _state_label(ground_label)
+        ground_meta = ground_metas[ground_id]
         for excited_id, excited_label in enumerate(b_zero_labels):
             transition = _transition_from_zero_labels(ground_label, excited_label)
             if transition is None:
                 continue
-            excited_meta = _state_label(excited_label)
+            excited_meta = excited_metas[excited_id]
             delta_mf = int(excited_meta["mF"] - ground_meta["mF"])
             if abs(delta_mf) > 1:
                 continue
@@ -403,6 +425,8 @@ def _build_transition_candidates(
                     "transition_name": transition.name,
                     "branch": transition.name[0],
                     "J_ground": int(transition.J_ground),
+                    "F1_ground": float(ground_meta["F1"]),
+                    "F_ground": int(ground_meta["F"]),
                     "ground_state_id": int(ground_id),
                     "excited_state_id": int(excited_id),
                     "ground_label": ground_meta["label"],
@@ -443,6 +467,7 @@ def _line_records_for_slice(
     candidates: Sequence[dict[str, object]],
     ground_js: npt.NDArray[np.int_],
     x_largest_current: Sequence[str],
+    x_mj_dominant: npt.NDArray[np.int_],
     b_largest_current: Sequence[str],
     coupling_cutoff: float,
 ) -> list[dict[str, object]]:
@@ -482,6 +507,7 @@ def _line_records_for_slice(
                 "nphotons": nphotons,
                 "branching": branching,
                 "ground_largest_current": x_largest_current[ground_id],
+                "ground_mJ_dominant": int(x_mj_dominant[ground_id]),
                 "excited_largest_current": b_largest_current[excited_id],
             }
         )
@@ -500,7 +526,7 @@ def build_transition_grid(
     ez_array = np.asarray(ez_values, dtype=np.float64)
     t_start = time.perf_counter()
     t0 = time.perf_counter()
-    x_basis, b_basis, b_label_basis, x_matrices, b_matrices = (
+    x_uncoupled, x_basis, x_transform, b_basis, b_label_basis, x_matrices, b_matrices = (
         _build_hamiltonian_sequences(
             ez_array, b_field, ground_js, excited_js, excited_j_padding
         )
@@ -526,6 +552,8 @@ def build_transition_grid(
     b_overlaps = b_overlaps[:, b_state_ids] if b_overlaps.size else b_overlaps
     ground_js_by_label = np.array([label.J for label in x_zero_labels], dtype=int)
     candidates = _build_transition_candidates(x_zero_labels, b_zero_labels)
+    x_basis_state_strings = _state_strings(x_basis)
+    b_label_basis_state_strings = _state_strings(b_label_basis)
 
     t0 = time.perf_counter()
     e1_operators = _build_e1_operator_matrices(x_basis, b_basis)
@@ -553,8 +581,21 @@ def build_transition_grid(
             component_strengths,
             candidates,
             ground_js_by_label,
-            _state_strings_by_overlap(x_eigenvectors[idx], x_basis, x_basis),
-            _state_strings_by_overlap(b_eigenvectors[idx], b_label_basis, b_basis),
+            _state_strings_by_overlap(
+                x_eigenvectors[idx],
+                x_basis,
+                x_basis,
+                label_strings=x_basis_state_strings,
+            ),
+            _dominant_uncoupled_mj_values(
+                x_eigenvectors[idx], x_transform, x_uncoupled
+            ),
+            _state_strings_by_overlap(
+                b_eigenvectors[idx],
+                b_label_basis,
+                b_basis,
+                label_strings=b_label_basis_state_strings,
+            ),
             coupling_cutoff,
         )
         lines_s = time.perf_counter() - t0
@@ -601,7 +642,7 @@ def build_transition_grid(
             )
 
     metadata = {
-        "schema_version": 4,
+        "schema_version": 6,
         "ground_js": list(map(int, ground_js)),
         "excited_js": list(map(int, excited_js)),
         "b_field_gauss": [float(v) for v in b_field],
@@ -732,7 +773,17 @@ def cluster_transition_components(
     if include_cluster_lines:
         cluster_line_columns = [
             column
-            for column in ["excited_label", "mF_ground", "mF_excited", "strength"]
+            for column in [
+                "excited_label",
+                "J_ground",
+                "F1_ground",
+                "F_ground",
+                "mF_ground",
+                "mF_excited",
+                "ground_mJ_dominant",
+                "strength",
+                "nphotons",
+            ]
             if column in lines_for_grouping.columns
         ]
         cluster_lines = lines_for_grouping[cluster_line_columns].copy()
@@ -824,13 +875,24 @@ def select_clusters_for_display(
     energy_lim: tuple[float, float] = (-300.0, 300.0),
     ir_uv: str = "IR",
     calibration_offset_ir_mhz: float | None = None,
+    zero_field_clusters: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     convert = 1 if ir_uv == "IR" else 4
     offset = transition_centroid(clusters, transition_name)
-    delta_column = f"delta frequency [{ir_uv}, MHz]"
+    delta_column = f"Δ freq [{ir_uv}, MHz]"
+    zero_field_delta_column = f"Δ from 0 V/cm [{ir_uv}, MHz]"
 
     selected = clusters.copy()
     selected[delta_column] = (selected["frequency_ir_mhz"] - offset) * convert
+    if zero_field_clusters is not None and not zero_field_clusters.empty:
+        references = {
+            str(name): transition_centroid(zero_field_clusters, str(name))
+            for name in zero_field_clusters["transition_name"].unique()
+        }
+        selected[zero_field_delta_column] = (
+            selected["frequency_ir_mhz"]
+            - selected["transition_name"].map(references)
+        ) * convert
     if calibration_offset_ir_mhz is not None:
         selected[f"frequency [{ir_uv}, GHz]"] = (
             (selected["frequency_ir_mhz"] + calibration_offset_ir_mhz) * convert / 1e3
@@ -900,10 +962,12 @@ def format_cluster_dataframe(selected: pd.DataFrame, ir_uv: str = "IR") -> pd.Da
     )
     columns = [
         "transition",
-        f"delta frequency [{ir_uv}, MHz]",
+        f"Δ freq [{ir_uv}, MHz]",
     ]
     if "cluster_id" in selected.columns:
         columns.insert(1, "cluster_id")
+    if f"Δ from 0 V/cm [{ir_uv}, MHz]" in selected.columns:
+        columns.append(f"Δ from 0 V/cm [{ir_uv}, MHz]")
     if f"frequency [{ir_uv}, GHz]" in selected.columns:
         columns.append(f"frequency [{ir_uv}, GHz]")
     columns.extend(
@@ -931,6 +995,7 @@ def generate_cluster_dataframe(
     energy_lim: tuple[float, float] = (-300.0, 300.0),
     ir_uv: str = "IR",
     calibration_offset_ir_mhz: float | None = None,
+    zero_field_clusters: pd.DataFrame | None = None,
     cluster_lines: pd.DataFrame | None = None,
     include_full_detail: bool = True,
 ) -> pd.DataFrame:
@@ -940,6 +1005,7 @@ def generate_cluster_dataframe(
         energy_lim,
         ir_uv,
         calibration_offset_ir_mhz=calibration_offset_ir_mhz,
+        zero_field_clusters=zero_field_clusters,
     )
     if cluster_lines is not None:
         selected = enrich_cluster_display_fields(

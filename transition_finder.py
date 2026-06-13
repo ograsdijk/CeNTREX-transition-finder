@@ -2,11 +2,12 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 import streamlit as st
 from centrex_tlf import utils
 
-from calibration import R0_F1_1_2_F_1
-from plot_utils import generate_grid_plot
+from calibration import DEFAULT_CALIBRATION_TRANSITION
+from plot_utils import PEAK_HEIGHT_MODELS, generate_grid_plot
 from transition_grid import (
     GRID_ARTIFACT,
     POLARIZATION_STRENGTH_COLUMNS,
@@ -26,6 +27,7 @@ file_path = Path(__file__).parent.absolute()
 IR_UV_CONVERSION_FACTOR = 4
 DEFAULT_ENERGY_RANGE = 300
 DEFAULT_RESOLVING_FREQUENCY = 2.5
+INITIAL_LEVEL_COLUMNS = ("J_ground", "F1_ground", "F_ground", "mF_ground")
 
 
 def initialize_session_state() -> None:
@@ -57,7 +59,7 @@ def calibration_offset_from_grid(
     grid: TransitionGrid, cesium_frequency_ghz: float
 ) -> float:
     zero_slice = grid.closest_slice(0.0)
-    calibration_transition = R0_F1_1_2_F_1
+    calibration_transition = DEFAULT_CALIBRATION_TRANSITION
     selected = zero_slice.lines[
         zero_slice.lines["transition_name"] == calibration_transition.transition.name
     ]
@@ -76,6 +78,46 @@ def calibration_offset_from_grid(
     offset = -model_frequency + calibration_transition.frequency
     offset -= calibration_transition.cesium_frequency - cesium_frequency_ghz * 1e3
     return offset
+
+
+def _format_half_integer(value: float) -> str:
+    numerator = round(float(value) * 2)
+    if numerator % 2 == 0:
+        return str(numerator // 2)
+    return f"{numerator}/2"
+
+
+def _visible_cluster_lines(
+    cluster_lines: pd.DataFrame,
+    visible_cluster_ids: set[int],
+) -> pd.DataFrame:
+    if cluster_lines.empty or not visible_cluster_ids:
+        return cluster_lines.iloc[0:0]
+    return cluster_lines[
+        cluster_lines["cluster_id"].astype(int).isin(visible_cluster_ids)
+    ]
+
+
+def _sorted_initial_level_combinations(
+    frame: pd.DataFrame,
+) -> list[tuple[int, float, int, int]]:
+    required = ["J_ground", "F1_ground", "F_ground", "mF_ground"]
+    if not set(required).issubset(frame.columns):
+        return []
+    unique_levels = frame[required].dropna().drop_duplicates()
+    combinations = [
+        (int(row["J_ground"]), float(row["F1_ground"]), int(row["F_ground"]), int(row["mF_ground"]))
+        for _, row in unique_levels.iterrows()
+    ]
+    return sorted(combinations)
+
+
+def _format_initial_level_combination(level: tuple[int, float, int, int]) -> str:
+    j_ground, f1_ground, f_ground, mf_ground = level
+    return (
+        f"J={j_ground}, F1={_format_half_integer(f1_ground)}, "
+        f"F={f_ground}, mF={mf_ground}"
+    )
 
 
 def render_grid_app() -> None:
@@ -118,11 +160,24 @@ def render_grid_app() -> None:
         if selected_lines.empty:
             st.error(f"No allowed E1 state pairs remain for {polarization} polarization.")
             return
+        has_mj_population_data = "ground_mJ_dominant" in selected_lines.columns
+        has_initial_level_population_data = set(INITIAL_LEVEL_COLUMNS).issubset(
+            selected_lines.columns
+        )
         clusters, cluster_lines = cluster_transition_components(
             selected_lines,
             resolving_frequency_mhz=float(resolving_frequency),
             include_cluster_lines=True,
         )
+        zero_field_clusters = None
+        if not np.isclose(grid_slice.ez_v_cm, 0.0):
+            zero_field_lines = apply_polarization_selection(
+                grid.closest_slice(0.0).lines, polarization
+            )
+            zero_field_clusters = cluster_transition_components(
+                zero_field_lines,
+                resolving_frequency_mhz=float(resolving_frequency),
+            )
         transition_names = sorted(
             str(name) for name in clusters["transition_name"].unique().tolist()
         )
@@ -142,18 +197,12 @@ def render_grid_app() -> None:
             st.number_input(label="MHz", max_value=0, step=1, key="energy_min_val")
         with col2:
             st.number_input(label="MHz", min_value=0, step=1, key="energy_max_val")
-        calibration_transition = R0_F1_1_2_F_1
+        calibration_transition = DEFAULT_CALIBRATION_TRANSITION
         cesium_frequency = st.number_input(
             label="Cesium Frequency [GHz]",
             value=calibration_transition.cesium_frequency / 1e3,
             step=1e-3,
             format="%.3f",
-        )
-        rotational_temperature = st.number_input(
-            label="Rotational Temperature [K]",
-            value=6.5,
-            step=0.1,
-            format="%.1f",
         )
 
     if not transition_types:
@@ -162,6 +211,10 @@ def render_grid_app() -> None:
     clusters = clusters[clusters["branch"].isin(transition_types)].reset_index(
         drop=True
     )
+    if zero_field_clusters is not None:
+        zero_field_clusters = zero_field_clusters[
+            zero_field_clusters["branch"].isin(transition_types)
+        ].reset_index(drop=True)
     if transition_selector[0] not in transition_types:
         st.error(
             f"Selected transition type '{transition_selector[0]}' is not in the filter."
@@ -172,9 +225,6 @@ def render_grid_app() -> None:
         st.session_state["energy_min_val"],
         st.session_state["energy_max_val"],
     )
-    thermal_population: npt.NDArray[np.floating] = utils.population.thermal_population(
-        np.arange(13), T=rotational_temperature
-    )
     calibration = calibration_offset_from_grid(grid, cesium_frequency)
     visible_clusters = select_clusters_for_display(
         clusters,
@@ -182,12 +232,107 @@ def render_grid_app() -> None:
         energy_lim,
         ir_uv,
         calibration_offset_ir_mhz=calibration,
+        zero_field_clusters=zero_field_clusters,
     )
+    visible_cluster_ids = set(visible_clusters["cluster_id"].astype(int))
     visible_clusters = enrich_cluster_display_fields(
         visible_clusters,
         cluster_lines,
         include_full_detail=True,
     )
+    visible_lines = _visible_cluster_lines(cluster_lines, visible_cluster_ids)
+
+    with st.sidebar.container(border=True):
+        st.subheader("Population")
+        population_models = list(PEAK_HEIGHT_MODELS)
+        if not has_mj_population_data:
+            population_models = [
+                model for model in population_models if model != "Lens mJ-selected"
+            ]
+        if not has_initial_level_population_data:
+            population_models = [
+                model
+                for model in population_models
+                if model != "Selected initial levels"
+            ]
+        height_model = st.selectbox(
+            label="Population mode",
+            options=population_models,
+            index=(
+                population_models.index("Equal peaks")
+                if "Equal peaks" in population_models
+                else 0
+            ),
+            label_visibility="collapsed",
+        )
+        if not has_mj_population_data:
+            st.caption(f"Rebuild {GRID_ARTIFACT} to enable mJ population weighting.")
+        if not has_initial_level_population_data:
+            st.caption(
+                f"Rebuild {GRID_ARTIFACT} to enable initial-level population selection."
+            )
+
+        rotational_temperature = 6.5
+        lens_target_mj = 0
+        lens_off_target_weight = 0.0
+        selected_initial_levels: list[tuple[int, float, int, int]] = []
+        if height_model == "Thermal population":
+            rotational_temperature = st.number_input(
+                label="Rotational Temperature [K]",
+                value=6.5,
+                step=0.1,
+                format="%.1f",
+            )
+        elif height_model == "Lens mJ-selected":
+            lens_target_mj = st.number_input(
+                label="Target mJ",
+                value=0,
+                step=1,
+                format="%d",
+            )
+            lens_off_target_weight = st.number_input(
+                label="Off-target weight",
+                value=0.0,
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                format="%.2f",
+            )
+        elif height_model == "Selected initial levels":
+            initial_level_options = _sorted_initial_level_combinations(visible_lines)
+            selected_initial_levels = st.multiselect(
+                label="Initial levels (J, F1, F, mF)",
+                options=initial_level_options,
+                default=[],
+                format_func=_format_initial_level_combination,
+            )
+            st.caption(f"Selected combinations: {len(selected_initial_levels)}")
+            if selected_initial_levels:
+                selected_levels_preview = pd.DataFrame(
+                    [
+                        {
+                            "J": int(level[0]),
+                            "F1": _format_half_integer(level[1]),
+                            "F": int(level[2]),
+                            "mF": int(level[3]),
+                        }
+                        for level in selected_initial_levels
+                    ]
+                )
+                st.dataframe(
+                    selected_levels_preview,
+                    hide_index=True,
+                    width="stretch",
+                    height=min(240, 35 * len(selected_levels_preview) + 36),
+                )
+
+    if height_model == "Thermal population":
+        rotational_population: npt.NDArray[np.floating] = (
+            utils.population.thermal_population(np.arange(13), T=rotational_temperature)
+        )
+    else:
+        rotational_population = np.ones(13, dtype=float)
+
     df = format_cluster_dataframe(visible_clusters, ir_uv)
     table_source_df = df.reset_index()
     summary_table_key = (
@@ -212,16 +357,33 @@ def render_grid_app() -> None:
     fig = generate_grid_plot(
         transition_selector,
         visible_clusters,
-        thermal_population,
+        rotational_population,
         ir_uv,
         selected_cluster_ids=selected_cluster_ids,
+        height_model=height_model,
+        linewidth_mhz=float(resolving_frequency),
+        cluster_lines=cluster_lines,
+        lens_target_mj=int(lens_target_mj) if height_model == "Lens mJ-selected" else 0,
+        lens_off_target_weight=(
+            float(lens_off_target_weight)
+            if height_model == "Lens mJ-selected"
+            else 0.0
+        ),
+        selected_initial_levels=set(selected_initial_levels)
+        if height_model == "Selected initial levels"
+        else None,
+        selected_initial_j=None,
+        selected_initial_f1=None,
+        selected_initial_f=None,
+        selected_initial_mf=None,
     )
     st.plotly_chart(fig, width="stretch")
 
     summary_columns = [
         column
         for column in [
-            f"delta frequency [{ir_uv}, MHz]",
+            f"Δ freq [{ir_uv}, MHz]",
+            f"Δ from 0 V/cm [{ir_uv}, MHz]",
             f"frequency [{ir_uv}, GHz]",
             "P'",
             "ΔmF",
@@ -233,9 +395,13 @@ def render_grid_app() -> None:
     summary_df = table_source_df[["transition", *summary_columns]].rename(
         columns={"P'": "parity"}
     )
-    if f"delta frequency [{ir_uv}, MHz]" in summary_df.columns:
-        summary_df[f"delta frequency [{ir_uv}, MHz]"] = summary_df[
-            f"delta frequency [{ir_uv}, MHz]"
+    if f"Δ freq [{ir_uv}, MHz]" in summary_df.columns:
+        summary_df[f"Δ freq [{ir_uv}, MHz]"] = summary_df[
+            f"Δ freq [{ir_uv}, MHz]"
+        ].map(lambda value: f"{value:.1f}")
+    if f"Δ from 0 V/cm [{ir_uv}, MHz]" in summary_df.columns:
+        summary_df[f"Δ from 0 V/cm [{ir_uv}, MHz]"] = summary_df[
+            f"Δ from 0 V/cm [{ir_uv}, MHz]"
         ].map(lambda value: f"{value:.1f}")
     if f"frequency [{ir_uv}, GHz]" in summary_df.columns:
         summary_df[f"frequency [{ir_uv}, GHz]"] = summary_df[
@@ -259,7 +425,8 @@ def render_grid_app() -> None:
             column
             for column in [
                 "cluster_id",
-                f"delta frequency [{ir_uv}, MHz]",
+                f"Δ freq [{ir_uv}, MHz]",
+                f"Δ from 0 V/cm [{ir_uv}, MHz]",
                 f"frequency [{ir_uv}, GHz]",
                 "P'",
                 "spread [IR, MHz]",
@@ -280,9 +447,13 @@ def render_grid_app() -> None:
         )
         if "cluster_id" in detail_df.columns:
             detail_df = detail_df.drop(columns=["cluster_id"])
-        if f"delta frequency [{ir_uv}, MHz]" in detail_df.columns:
-            detail_df[f"delta frequency [{ir_uv}, MHz]"] = detail_df[
-                f"delta frequency [{ir_uv}, MHz]"
+        if f"Δ freq [{ir_uv}, MHz]" in detail_df.columns:
+            detail_df[f"Δ freq [{ir_uv}, MHz]"] = detail_df[
+                f"Δ freq [{ir_uv}, MHz]"
+            ].map(lambda value: f"{value:.1f}")
+        if f"Δ from 0 V/cm [{ir_uv}, MHz]" in detail_df.columns:
+            detail_df[f"Δ from 0 V/cm [{ir_uv}, MHz]"] = detail_df[
+                f"Δ from 0 V/cm [{ir_uv}, MHz]"
             ].map(lambda value: f"{value:.1f}")
         if f"frequency [{ir_uv}, GHz]" in detail_df.columns:
             detail_df[f"frequency [{ir_uv}, GHz]"] = detail_df[

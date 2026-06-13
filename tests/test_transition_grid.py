@@ -14,6 +14,7 @@ from transition_grid import (
     _assign_labels_by_overlap,
     _build_e1_operator_matrices,
     _build_hamiltonian_sequences,
+    _dominant_uncoupled_mj_values,
     _polarization_strength_matrices,
     _build_tracked_manifold,
     _build_transition_candidates,
@@ -48,9 +49,12 @@ def test_cluster_transition_components_groups_within_transition_name():
                 "transition_name": "R(0) F1'=1/2 F'=1",
                 "branch": "R",
                 "J_ground": 0,
+                "F1_ground": 0.5,
+                "F_ground": 1,
                 "frequency_ir_mhz": 100.0,
                 "strength": 1.0,
                 "nphotons": 10.0,
+                "ground_mJ_dominant": 0,
                 "mF_ground": 0,
                 "mF_excited": 0,
             },
@@ -58,9 +62,12 @@ def test_cluster_transition_components_groups_within_transition_name():
                 "transition_name": "R(0) F1'=1/2 F'=1",
                 "branch": "R",
                 "J_ground": 0,
+                "F1_ground": 0.5,
+                "F_ground": 1,
                 "frequency_ir_mhz": 101.0,
                 "strength": 3.0,
                 "nphotons": 20.0,
+                "ground_mJ_dominant": 1,
                 "mF_ground": 0,
                 "mF_excited": 1,
             },
@@ -68,9 +75,12 @@ def test_cluster_transition_components_groups_within_transition_name():
                 "transition_name": "Q(1) F1'=1/2 F'=1",
                 "branch": "Q",
                 "J_ground": 1,
+                "F1_ground": 1.5,
+                "F_ground": 2,
                 "frequency_ir_mhz": 101.5,
                 "strength": 5.0,
                 "nphotons": 30.0,
+                "ground_mJ_dominant": 1,
                 "mF_ground": -1,
                 "mF_excited": -1,
             },
@@ -78,9 +88,12 @@ def test_cluster_transition_components_groups_within_transition_name():
                 "transition_name": "R(0) F1'=1/2 F'=1",
                 "branch": "R",
                 "J_ground": 0,
+                "F1_ground": 0.5,
+                "F_ground": 1,
                 "frequency_ir_mhz": 110.0,
                 "strength": 1.0,
                 "nphotons": 10.0,
+                "ground_mJ_dominant": -1,
                 "mF_ground": 0,
                 "mF_excited": -1,
             },
@@ -101,6 +114,10 @@ def test_cluster_transition_components_groups_within_transition_name():
     assert first["delta_mf"] == "0, +1"
     assert first["frequency_ir_mhz"] == 100.75
     assert "mf_dominant" not in clusters.columns
+    assert "ground_mJ_dominant" in cluster_lines.columns
+    assert "F1_ground" in cluster_lines.columns
+    assert "F_ground" in cluster_lines.columns
+    assert "nphotons" in cluster_lines.columns
 
 
 def test_enrich_cluster_display_fields_adds_lazy_mf_summaries():
@@ -330,11 +347,43 @@ def test_generate_cluster_dataframe_uses_weighted_reference_centroid():
         energy_lim=(-20, 20),
         ir_uv="IR",
         calibration_offset_ir_mhz=1.0,
+        zero_field_clusters=clusters.assign(frequency_ir_mhz=[95.0, 103.0]),
     )
 
     assert centroid == 103.0
-    assert list(df["delta frequency [IR, MHz]"]) == [-3.0, 1.0]
+    assert list(df["Δ freq [IR, MHz]"]) == [-3.0, 1.0]
+    assert list(df["Δ from 0 V/cm [IR, MHz]"]) == [-1.0, 3.0]
     assert list(df["frequency [IR, GHz]"]) == [0.101, 0.105]
+
+
+def test_generate_cluster_dataframe_omits_zero_field_shift_without_reference():
+    clusters = pd.DataFrame(
+        [
+            {
+                "transition_name": "R(0) F1'=1/2 F'=1",
+                "branch": "R",
+                "J_ground": 0,
+                "excited_parent_parity": "+",
+                "frequency_ir_mhz": 100.0,
+                "spread_ir_mhz": 0.0,
+                "strength": 1.0,
+                "components": 1,
+                "mf_branches": 1,
+                "delta_mf": "0",
+                "nphotons": 10.0,
+            },
+        ]
+    )
+
+    df = generate_cluster_dataframe(
+        clusters,
+        "R(0) F1'=1/2 F'=1",
+        energy_lim=(-20, 20),
+        ir_uv="IR",
+    )
+
+    assert "Δ freq [IR, MHz]" in df.columns
+    assert "Δ from 0 V/cm [IR, MHz]" not in df.columns
 
 
 def test_line_records_convert_uv_hamiltonian_frequency_to_ir():
@@ -363,11 +412,13 @@ def test_line_records_convert_uv_hamiltonian_frequency_to_ir():
         ],
         ground_js=np.array([0]),
         x_largest_current=["X"],
+        x_mj_dominant=np.array([0]),
         b_largest_current=["B"],
         coupling_cutoff=0.0,
     )
 
     assert records[0]["frequency_ir_mhz"] == 100.0
+    assert records[0]["ground_mJ_dominant"] == 0
 
 
 def test_polarization_strength_matrices_include_coherent_sigma_components():
@@ -404,8 +455,37 @@ def test_apply_polarization_selection_reweights_and_filters_lines():
     assert selected.iloc[0]["polarization"] == "Z"
 
 
+def test_dominant_uncoupled_mj_values_uses_largest_uncoupled_component():
+    class Uncoupled:
+        def __init__(self, mJ: int) -> None:
+            self.mJ = mJ
+
+    eigenvectors = np.array(
+        [
+            [0.1, 0.2],
+            [0.9, 0.1],
+            [0.2, 0.8],
+        ],
+        dtype=np.complex128,
+    )
+    transform = np.eye(3, dtype=np.complex128)
+    uncoupled_basis = [Uncoupled(-1), Uncoupled(0), Uncoupled(1)]
+
+    mjs = _dominant_uncoupled_mj_values(eigenvectors, transform, uncoupled_basis)
+
+    assert list(mjs) == [0, 1]
+
+
 def test_operator_matrix_couplings_match_direct_mixed_state_calls():
-    x_basis, b_basis, _b_label_basis, x_matrices, b_matrices = (
+    (
+        _x_uncoupled,
+        x_basis,
+        _x_transform,
+        b_basis,
+        _b_label_basis,
+        x_matrices,
+        b_matrices,
+    ) = (
         _build_hamiltonian_sequences(
             np.array([25.0]),
             np.array([0.0, 0.0, 1e-3]),
@@ -435,7 +515,15 @@ def test_operator_matrix_couplings_match_direct_mixed_state_calls():
 
 
 def test_candidate_generation_keeps_same_parity_mixed_field_candidates():
-    x_basis, b_basis, b_label_basis, x_matrices, b_matrices = (
+    (
+        _x_uncoupled,
+        x_basis,
+        _x_transform,
+        b_basis,
+        b_label_basis,
+        x_matrices,
+        b_matrices,
+    ) = (
         _build_hamiltonian_sequences(
             np.array([0.0]),
             np.array([0.0, 0.0, 1e-3]),
@@ -451,6 +539,12 @@ def test_candidate_generation_keeps_same_parity_mixed_field_candidates():
     )
     candidates = _build_transition_candidates(x_labels, b_labels)
 
+    assert all("F1_ground" in candidate for candidate in candidates)
+    assert all("F_ground" in candidate for candidate in candidates)
+    first_candidate = candidates[0]
+    first_ground_label = x_labels[int(first_candidate["ground_state_id"])]
+    assert first_candidate["F1_ground"] == float(first_ground_label.F1)
+    assert first_candidate["F_ground"] == int(first_ground_label.F)
     assert any(
         x_labels[candidate["ground_state_id"]].P
         == b_labels[candidate["excited_state_id"]].P
@@ -468,6 +562,7 @@ def test_tiny_grid_precompute_filters_forbidden_mf_and_e2():
 
     grid_slice = grid.closest_slice(0.0)
 
+    assert grid.metadata["schema_version"] == 6
     assert len(grid_slice.lines) > 0
     assert set(grid_slice.lines["branch"]).issubset({"P", "Q", "R"})
     assert np.all(np.abs(grid_slice.lines["delta_mF"].to_numpy()) <= 1)
@@ -478,6 +573,9 @@ def test_tiny_grid_precompute_filters_forbidden_mf_and_e2():
     assert np.allclose(grid_slice.lines["strength_all"], grid_slice.lines["strength"])
     assert "strength_sigma_plus" in grid_slice.lines.columns
     assert "strength_sigma_minus" in grid_slice.lines.columns
+    assert "ground_mJ_dominant" in grid_slice.lines.columns
+    assert "F1_ground" in grid_slice.lines.columns
+    assert "F_ground" in grid_slice.lines.columns
     assert "mF_ground" in grid_slice.lines.columns
     assert "mF_excited" in grid_slice.lines.columns
     assert "excited_parent_parity" in grid_slice.lines.columns
