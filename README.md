@@ -60,6 +60,22 @@ grid can take a long time; the script prints per-field timing and ETA
 information. The grid file is intentionally ignored by git because the full
 artifact can exceed GitHub's regular file-size limit.
 
+For a faster full build on a multicore machine, use worker processes:
+
+```powershell
+uv run python compute_transitions.py --workers 8
+```
+
+`--workers` is the default worker count for parallel stages. Override individual
+stages with `--e1-workers` or `--tracking-workers` when needed:
+
+```powershell
+uv run python compute_transitions.py --workers 8 --e1-workers 6 --tracking-workers 4
+```
+
+The setup line reports the effective worker counts for tracking and E1
+construction.
+
 If you already have a `transition_grid.pkl` from an older version, rebuild it. The
 app rejects old grid metadata because older grids stored UV Hamiltonian differences
 as if they were IR frequencies.

@@ -1,10 +1,14 @@
 import argparse
 import pickle
 import re
+import sys
+import threading
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from multiprocessing import shared_memory
 from pathlib import Path
-from typing import Literal, Sequence, overload
+from typing import Callable, Literal, Sequence, TextIO, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -42,6 +46,86 @@ E1_POLARIZATION_VECTORS = {
     "z": np.array([0.0, 0.0, 1.0], dtype=complex),
 }
 PARENT_PARITY_PATTERN = re.compile(r"P\s*=\s*([+-])")
+
+
+def format_elapsed(seconds: float) -> str:
+    seconds_int = max(0, int(seconds))
+    hours, remainder = divmod(seconds_int, 3600)
+    minutes, seconds_int = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds_int:02d}"
+
+
+class ElapsedSpinner:
+    def __init__(
+        self,
+        message: str,
+        *,
+        enabled: bool = True,
+        stream: TextIO = sys.stdout,
+        interval_s: float = 0.1,
+    ) -> None:
+        self.message = message
+        self.enabled = bool(enabled and stream.isatty())
+        self.stream = stream
+        self.interval_s = interval_s
+        self._frames = ("|", "/", "-", "\\")
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._start = 0.0
+        self._last_len = 0
+
+    def __enter__(self) -> "ElapsedSpinner":
+        if not self.enabled:
+            return self
+        self._start = time.perf_counter()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        with self._lock:
+            self._clear_line()
+            self.stream.flush()
+
+    def print_line(self, line: str) -> None:
+        if not self.enabled:
+            print(line)
+            return
+        with self._lock:
+            self._clear_line()
+            print(line, file=self.stream)
+            self._write_frame(self._frames[0])
+            self.stream.flush()
+
+    def _run(self) -> None:
+        frame_idx = 0
+        while not self._stop.is_set():
+            with self._lock:
+                self._write_frame(self._frames[frame_idx % len(self._frames)])
+                self.stream.flush()
+            frame_idx += 1
+            self._stop.wait(self.interval_s)
+
+    def _write_frame(self, frame: str) -> None:
+        line = (
+            f"{self.message} {frame} elapsed "
+            f"{format_elapsed(time.perf_counter() - self._start)}"
+        )
+        self.stream.write("\r" + line)
+        if self._last_len > len(line):
+            self.stream.write(" " * (self._last_len - len(line)))
+        self._last_len = len(line)
+
+    def _clear_line(self) -> None:
+        if self._last_len:
+            self.stream.write("\r" + " " * self._last_len + "\r")
+            self._last_len = 0
 
 
 @dataclass
@@ -169,14 +253,132 @@ def _tracking_overlap(
     return np.abs(overlaps).astype(np.float64)
 
 
+def _column_permutation(
+    reference: npt.NDArray[np.complex128],
+    candidate: npt.NDArray[np.complex128],
+) -> npt.NDArray[np.int_]:
+    overlap = np.abs(reference.conj().T @ candidate).astype(np.float64)
+    row_ids, column_ids = linear_sum_assignment(-overlap)
+    return column_ids[np.argsort(row_ids)].astype(int)
+
+
+def _tracking_boundary_permutation(
+    reference_energies: npt.NDArray[np.float64],
+    reference_vectors: npt.NDArray[np.complex128],
+    candidate_energies: npt.NDArray[np.float64],
+    candidate_vectors: npt.NDArray[np.complex128],
+) -> npt.NDArray[np.int_]:
+    overlap_distance = 1.0 - np.abs(reference_vectors.conj().T @ candidate_vectors)
+    energy_distance = np.abs(
+        reference_energies[:, np.newaxis] - candidate_energies[np.newaxis, :]
+    )
+    row_ids, column_ids = linear_sum_assignment(overlap_distance * energy_distance)
+    return column_ids[np.argsort(row_ids)].astype(int)
+
+
+TrackingBlockTask = tuple[int, int, int, str, tuple[int, ...], str]
+
+
+def _tracked_block_worker(
+    task: TrackingBlockTask,
+) -> tuple[int, int, int, npt.NDArray[np.float64], npt.NDArray[np.complex128]]:
+    block_id, start, stop, shared_name, shape, dtype_str = task
+    shared = shared_memory.SharedMemory(name=shared_name)
+    matrices: npt.NDArray[np.complex128] | None = None
+    try:
+        matrices = np.ndarray(shape, dtype=np.dtype(dtype_str), buffer=shared.buf)
+        energies, eigenvectors = eigenshuffle_eigh(
+            matrices[start:stop],
+            use_eigenvalues=True,
+        )
+        return block_id, start, stop, energies, eigenvectors
+    finally:
+        del matrices
+        shared.close()
+
+
+def _make_shared_array(
+    values: npt.NDArray[np.complex128],
+) -> tuple[shared_memory.SharedMemory, npt.NDArray[np.complex128]]:
+    contiguous = np.ascontiguousarray(values)
+    shared = shared_memory.SharedMemory(create=True, size=contiguous.nbytes)
+    shared_values = np.ndarray(
+        contiguous.shape,
+        dtype=contiguous.dtype,
+        buffer=shared.buf,
+    )
+    shared_values[:] = contiguous
+    return shared, shared_values
+
+
+def _tracking_blocks(n_matrices: int, workers: int) -> list[tuple[int, int, int]]:
+    n_blocks = min(max(1, int(workers)), n_matrices)
+    index_blocks = np.array_split(np.arange(n_matrices), n_blocks)
+    blocks: list[tuple[int, int, int]] = []
+    for block_id, indices in enumerate(index_blocks):
+        if len(indices) == 0:
+            continue
+        blocks.append((block_id, int(indices[0]), int(indices[-1]) + 1))
+    return blocks
+
+
+def _build_tracked_manifold_serial(
+    matrices: npt.NDArray[np.complex128],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.complex128]]:
+    return eigenshuffle_eigh(matrices, use_eigenvalues=True)
+
+
 def _build_tracked_manifold(
     matrices: npt.NDArray[np.complex128],
+    workers: int = 1,
 ) -> tuple[
     npt.NDArray[np.float64],
     npt.NDArray[np.complex128],
     npt.NDArray[np.float64],
 ]:
-    energies, eigenvectors = eigenshuffle_eigh(matrices, use_eigenvalues=True)
+    workers = max(1, int(workers))
+    if workers == 1 or len(matrices) < 2:
+        energies, eigenvectors = _build_tracked_manifold_serial(matrices)
+    else:
+        blocks = _tracking_blocks(len(matrices), workers)
+        shared, shared_matrices = _make_shared_array(matrices)
+        try:
+            tasks = [
+                (
+                    block_id,
+                    start,
+                    stop,
+                    shared.name,
+                    shared_matrices.shape,
+                    shared_matrices.dtype.str,
+                )
+                for block_id, start, stop in blocks
+            ]
+            with ProcessPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
+                results = list(pool.map(_tracked_block_worker, tasks))
+        finally:
+            del shared_matrices
+            shared.close()
+            shared.unlink()
+        results = sorted(results, key=lambda result: result[0])
+        energy_blocks = [result[3] for result in results]
+        eigenvector_blocks = [result[4] for result in results]
+
+        for block_idx in range(1, len(results)):
+            current_perm = _tracking_boundary_permutation(
+                energy_blocks[block_idx - 1][-1],
+                eigenvector_blocks[block_idx - 1][-1],
+                energy_blocks[block_idx][0],
+                eigenvector_blocks[block_idx][0],
+            )
+            energy_blocks[block_idx] = energy_blocks[block_idx][:, current_perm]
+            eigenvector_blocks[block_idx] = eigenvector_blocks[block_idx][
+                :, :, current_perm
+            ]
+
+        energies = np.concatenate(energy_blocks, axis=0)
+        eigenvectors = np.concatenate(eigenvector_blocks, axis=0)
+
     if len(energies) < 2:
         overlaps = np.ones((0, energies.shape[1]), dtype=np.float64)
     else:
@@ -324,7 +526,34 @@ def _build_hamiltonian_sequences(
     )
 
 
-def _build_e1_operator_matrices(
+E1OperatorBlockTask = tuple[
+    str,
+    npt.NDArray[np.complex128],
+    int,
+    int,
+    Sequence[CoupledBasisState],
+    Sequence[CoupledBasisState],
+]
+
+
+def _e1_operator_block(
+    task: E1OperatorBlockTask,
+) -> tuple[str, int, int, npt.NDArray[np.complex128]]:
+    name, pol_vec, row_start, row_stop, x_basis, b_basis = task
+    block = np.zeros((row_stop - row_start, len(x_basis)), dtype=np.complex128)
+    for local_row, excited_id in enumerate(range(row_start, row_stop)):
+        excited_state = 1 * b_basis[excited_id]
+        for ground_id, ground in enumerate(x_basis):
+            block[local_row, ground_id] = generate_ED_ME_mixed_state(
+                excited_state,
+                1 * ground,
+                pol_vec=pol_vec,
+                reduced=False,
+            )
+    return name, row_start, row_stop, block
+
+
+def _build_e1_operator_matrices_serial(
     x_basis: Sequence[CoupledBasisState],
     b_basis: Sequence[CoupledBasisState],
 ) -> dict[str, npt.NDArray[np.complex128]]:
@@ -341,6 +570,33 @@ def _build_e1_operator_matrices(
                     reduced=False,
                 )
         operators[name] = matrix
+    return operators
+
+
+def _build_e1_operator_matrices(
+    x_basis: Sequence[CoupledBasisState],
+    b_basis: Sequence[CoupledBasisState],
+    workers: int = 1,
+) -> dict[str, npt.NDArray[np.complex128]]:
+    workers = max(1, int(workers))
+    if workers == 1:
+        return _build_e1_operator_matrices_serial(x_basis, b_basis)
+
+    operators = {
+        name: np.zeros((len(b_basis), len(x_basis)), dtype=np.complex128)
+        for name in E1_POLARIZATION_VECTORS
+    }
+    chunk_count = max(1, workers * 2)
+    chunk_size = max(1, (len(b_basis) + chunk_count - 1) // chunk_count)
+    tasks: list[E1OperatorBlockTask] = []
+    for name, pol_vec in E1_POLARIZATION_VECTORS.items():
+        for row_start in range(0, len(b_basis), chunk_size):
+            row_stop = min(len(b_basis), row_start + chunk_size)
+            tasks.append((name, pol_vec, row_start, row_stop, x_basis, b_basis))
+
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for name, row_start, row_stop, block in pool.map(_e1_operator_block, tasks):
+            operators[name][row_start:row_stop, :] = block
     return operators
 
 
@@ -522,21 +778,33 @@ def build_transition_grid(
     excited_j_padding: int = 2,
     coupling_cutoff: float = DEFAULT_COUPLING_CUTOFF,
     progress: bool = True,
+    progress_reporter: Callable[[str], None] = print,
+    timer: Callable[[], float] = time.perf_counter,
+    workers: int = 1,
+    tracking_workers: int = 1,
 ) -> TransitionGrid:
+    workers = max(1, int(workers))
+    tracking_workers = max(1, int(tracking_workers))
     ez_array = np.asarray(ez_values, dtype=np.float64)
-    t_start = time.perf_counter()
-    t0 = time.perf_counter()
+    t_start = timer()
+    t0 = timer()
     x_uncoupled, x_basis, x_transform, b_basis, b_label_basis, x_matrices, b_matrices = (
         _build_hamiltonian_sequences(
             ez_array, b_field, ground_js, excited_js, excited_j_padding
         )
     )
-    build_matrices_s = time.perf_counter() - t0
+    build_matrices_s = timer() - t0
 
-    t0 = time.perf_counter()
-    x_energies, x_eigenvectors, x_overlaps = _build_tracked_manifold(x_matrices)
-    b_energies, b_eigenvectors, b_overlaps = _build_tracked_manifold(b_matrices)
-    track_s = time.perf_counter() - t0
+    t0 = timer()
+    x_energies, x_eigenvectors, x_overlaps = _build_tracked_manifold(
+        x_matrices,
+        workers=tracking_workers,
+    )
+    b_energies, b_eigenvectors, b_overlaps = _build_tracked_manifold(
+        b_matrices,
+        workers=tracking_workers,
+    )
+    track_s = timer() - t0
 
     x_zero_labels, x_state_ids, x_zero_assignment_overlaps = _assign_labels_by_overlap(
         x_eigenvectors[0], x_basis, x_basis
@@ -555,14 +823,23 @@ def build_transition_grid(
     x_basis_state_strings = _state_strings(x_basis)
     b_label_basis_state_strings = _state_strings(b_label_basis)
 
-    t0 = time.perf_counter()
-    e1_operators = _build_e1_operator_matrices(x_basis, b_basis)
-    e1_operator_s = time.perf_counter() - t0
+    t0 = timer()
+    e1_operators = _build_e1_operator_matrices(x_basis, b_basis, workers=workers)
+    e1_operator_s = timer() - t0
+    setup_s = timer() - t_start
+    if progress:
+        progress_reporter(
+            f"Setup: hamiltonians={build_matrices_s:.1f}s, "
+            f"tracking={track_s:.1f}s (workers={tracking_workers}), "
+            f"e1={e1_operator_s:.1f}s (workers={workers}), "
+            f"total={setup_s:.1f}s"
+        )
 
     slices: dict[float, TransitionGridSlice] = {}
+    completed_slice_s = 0.0
     for idx, ez_v_cm in enumerate(ez_array):
-        slice_start = time.perf_counter()
-        t0 = time.perf_counter()
+        slice_start = timer()
+        t0 = timer()
         coupling_matrices = _coupling_matrices_for_field(
             e1_operators,
             x_eigenvectors[idx],
@@ -570,9 +847,9 @@ def build_transition_grid(
         )
         component_strengths = _polarization_strength_matrices(coupling_matrices)
         strength_matrix = component_strengths["all"]
-        matrix_coupling_s = time.perf_counter() - t0
+        matrix_coupling_s = timer() - t0
 
-        t0 = time.perf_counter()
+        t0 = timer()
         records = _line_records_for_slice(
             float(ez_v_cm),
             x_energies[idx],
@@ -598,7 +875,7 @@ def build_transition_grid(
             ),
             coupling_cutoff,
         )
-        lines_s = time.perf_counter() - t0
+        lines_s = timer() - t0
         lines = pd.DataFrame.from_records(records)
         if not lines.empty:
             lines = lines.sort_values(
@@ -621,11 +898,13 @@ def build_transition_grid(
             "min_x_zero_label_overlap": float(np.min(x_zero_assignment_overlaps)),
             "min_b_zero_label_overlap": float(np.min(b_zero_assignment_overlaps)),
         }
+        slice_total_s = timer() - slice_start
         timings = {
             "matrix_coupling_s": matrix_coupling_s,
             "line_generation_s": lines_s,
-            "slice_total_s": time.perf_counter() - slice_start,
+            "slice_total_s": slice_total_s,
         }
+        completed_slice_s += slice_total_s
         slices[float(ez_v_cm)] = TransitionGridSlice(
             ez_v_cm=float(ez_v_cm),
             lines=lines,
@@ -633,9 +912,11 @@ def build_transition_grid(
             diagnostics=diagnostics,
         )
         if progress:
-            elapsed = time.perf_counter() - t_start
-            remaining = (len(ez_array) - idx - 1) * elapsed / (idx + 1)
-            print(
+            elapsed = timer() - t_start
+            remaining = (
+                (len(ez_array) - idx - 1) * completed_slice_s / (idx + 1)
+            )
+            progress_reporter(
                 f"Ez={ez_v_cm:g} V/cm: {len(lines)} lines, "
                 f"slice={timings['slice_total_s']:.1f}s, "
                 f"elapsed={elapsed:.1f}s, eta={remaining:.1f}s"
@@ -654,7 +935,9 @@ def build_transition_grid(
         "build_matrices_s": build_matrices_s,
         "tracking_s": track_s,
         "e1_operator_s": e1_operator_s,
-        "total_s": time.perf_counter() - t_start,
+        "workers": workers,
+        "tracking_workers": tracking_workers,
+        "total_s": timer() - t_start,
     }
     return TransitionGrid(ez_values=ez_array, slices=slices, metadata=metadata)
 
@@ -875,6 +1158,7 @@ def select_clusters_for_display(
     energy_lim: tuple[float, float] = (-300.0, 300.0),
     ir_uv: str = "IR",
     calibration_offset_ir_mhz: float | None = None,
+    reference_axis_shift_ir_mhz: float = 0.0,
     zero_field_clusters: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     convert = 1 if ir_uv == "IR" else 4
@@ -895,7 +1179,13 @@ def select_clusters_for_display(
         ) * convert
     if calibration_offset_ir_mhz is not None:
         selected[f"frequency [{ir_uv}, GHz]"] = (
-            (selected["frequency_ir_mhz"] + calibration_offset_ir_mhz) * convert / 1e3
+            (
+                selected["frequency_ir_mhz"]
+                + calibration_offset_ir_mhz
+                + float(reference_axis_shift_ir_mhz)
+            )
+            * convert
+            / 1e3
         )
     return selected[
         (selected[delta_column] >= energy_lim[0])
@@ -995,6 +1285,7 @@ def generate_cluster_dataframe(
     energy_lim: tuple[float, float] = (-300.0, 300.0),
     ir_uv: str = "IR",
     calibration_offset_ir_mhz: float | None = None,
+    reference_axis_shift_ir_mhz: float = 0.0,
     zero_field_clusters: pd.DataFrame | None = None,
     cluster_lines: pd.DataFrame | None = None,
     include_full_detail: bool = True,
@@ -1005,6 +1296,7 @@ def generate_cluster_dataframe(
         energy_lim,
         ir_uv,
         calibration_offset_ir_mhz=calibration_offset_ir_mhz,
+        reference_axis_shift_ir_mhz=reference_axis_shift_ir_mhz,
         zero_field_clusters=zero_field_clusters,
     )
     if cluster_lines is not None:
@@ -1025,20 +1317,63 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ground-j-max", type=int, default=12)
     parser.add_argument("--excited-j-max", type=int, default=10)
     parser.add_argument("--excited-j-padding", type=int, default=2)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Default worker process count for parallel stages.",
+    )
+    parser.add_argument(
+        "--e1-workers",
+        type=int,
+        default=None,
+        help="Override worker process count for E1 operator construction.",
+    )
+    parser.add_argument(
+        "--tracking-workers",
+        type=int,
+        default=None,
+        help="Override worker process count for block eigenshuffle tracking.",
+    )
+    parser.add_argument(
+        "--no-spinner",
+        action="store_true",
+        help="Disable the interactive elapsed-time spinner.",
+    )
     return parser
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()
-    ez_values = np.arange(args.ez_min, args.ez_max + args.ez_step / 2, args.ez_step)
-    grid = build_transition_grid(
-        ez_values=ez_values,
-        ground_js=tuple(range(args.ground_j_max + 1)),
-        excited_js=tuple(range(1, args.excited_j_max + 1)),
-        excited_j_padding=args.excited_j_padding,
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
+    e1_workers = args.workers if args.e1_workers is None else args.e1_workers
+    tracking_workers = (
+        args.workers if args.tracking_workers is None else args.tracking_workers
     )
-    save_transition_grid(grid, args.output)
-    print(f"Wrote {args.output}")
+    if e1_workers < 1:
+        parser.error("--e1-workers must be at least 1")
+    if tracking_workers < 1:
+        parser.error("--tracking-workers must be at least 1")
+    ez_values = np.arange(args.ez_min, args.ez_max + args.ez_step / 2, args.ez_step)
+    total_start = time.perf_counter()
+    with ElapsedSpinner(
+        "Building transition grid",
+        enabled=not args.no_spinner,
+    ) as spinner:
+        grid = build_transition_grid(
+            ez_values=ez_values,
+            ground_js=tuple(range(args.ground_j_max + 1)),
+            excited_js=tuple(range(1, args.excited_j_max + 1)),
+            excited_j_padding=args.excited_j_padding,
+            workers=e1_workers,
+            tracking_workers=tracking_workers,
+            progress_reporter=spinner.print_line,
+        )
+        spinner.message = "Saving transition grid"
+        save_transition_grid(grid, args.output)
+    print(f"Done in {format_elapsed(time.perf_counter() - total_start)}. Wrote {args.output}")
 
 
 if __name__ == "__main__":

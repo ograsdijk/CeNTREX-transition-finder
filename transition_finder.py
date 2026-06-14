@@ -7,7 +7,7 @@ import streamlit as st
 from centrex_tlf import utils
 
 from calibration import DEFAULT_CALIBRATION_TRANSITION
-from plot_utils import PEAK_HEIGHT_MODELS, generate_grid_plot
+from plot_utils import PEAK_HEIGHT_MODELS, generate_grid_plot, marker_position_mhz
 from transition_grid import (
     GRID_ARTIFACT,
     POLARIZATION_STRENGTH_COLUMNS,
@@ -18,6 +18,7 @@ from transition_grid import (
     format_cluster_dataframe,
     load_transition_grid,
     select_clusters_for_display,
+    transition_centroid,
 )
 
 st.set_page_config(page_title="CeNTREX Transitions", layout="wide")
@@ -27,7 +28,9 @@ file_path = Path(__file__).parent.absolute()
 IR_UV_CONVERSION_FACTOR = 4
 DEFAULT_ENERGY_RANGE = 300
 DEFAULT_RESOLVING_FREQUENCY = 2.5
+DEFAULT_AOM_SHIFT_UV_MHZ = 0.0
 INITIAL_LEVEL_COLUMNS = ("J_ground", "F1_ground", "F_ground", "mF_ground")
+DELTA = chr(916)
 
 
 def initialize_session_state() -> None:
@@ -35,6 +38,12 @@ def initialize_session_state() -> None:
         "energy_min_val": -DEFAULT_ENERGY_RANGE,
         "energy_max_val": DEFAULT_ENERGY_RANGE,
         "prev_ir_uv": "IR",
+        "aom_shift_uv_mhz": DEFAULT_AOM_SHIFT_UV_MHZ,
+        "show_vertical_marker": False,
+        "vertical_marker_mode": "frequency",
+        "vertical_marker_frequency_ghz": 0.0,
+        "vertical_marker_delta_mhz": 0.0,
+        "vertical_marker_context": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -106,7 +115,12 @@ def _sorted_initial_level_combinations(
         return []
     unique_levels = frame[required].dropna().drop_duplicates()
     combinations = [
-        (int(row["J_ground"]), float(row["F1_ground"]), int(row["F_ground"]), int(row["mF_ground"]))
+        (
+            int(row["J_ground"]),
+            float(row["F1_ground"]),
+            int(row["F_ground"]),
+            int(row["mF_ground"]),
+        )
         for _, row in unique_levels.iterrows()
     ]
     return sorted(combinations)
@@ -118,6 +132,156 @@ def _format_initial_level_combination(level: tuple[int, float, int, int]) -> str
         f"J={j_ground}, F1={_format_half_integer(f1_ground)}, "
         f"F={f_ground}, mF={mf_ground}"
     )
+
+
+def _set_energy_range(limit_mhz: int) -> None:
+    st.session_state["energy_min_val"] = -int(limit_mhz)
+    st.session_state["energy_max_val"] = int(limit_mhz)
+
+
+def _reset_frequency_reference() -> None:
+    st.session_state["cesium_frequency_ghz"] = (
+        DEFAULT_CALIBRATION_TRANSITION.cesium_frequency / 1e3
+    )
+    st.session_state["aom_shift_uv_mhz"] = DEFAULT_AOM_SHIFT_UV_MHZ
+
+
+def _display_frequency_ghz(
+    frequency_ir_mhz: float,
+    *,
+    ir_uv: str,
+    calibration_offset_ir_mhz: float,
+    reference_axis_shift_ir_mhz: float,
+) -> float:
+    convert = IR_UV_CONVERSION_FACTOR if ir_uv == "UV" else 1
+    return (
+        (
+            float(frequency_ir_mhz)
+            + float(calibration_offset_ir_mhz)
+            + float(reference_axis_shift_ir_mhz)
+        )
+        * convert
+        / 1e3
+    )
+
+
+def _marker_delta_from_frequency_ghz(
+    frequency_ghz: float, context: dict[str, object]
+) -> float:
+    return marker_position_mhz(
+        frequency_ghz,
+        f"{context['ir_uv']} GHz",
+        ir_uv=str(context["ir_uv"]),
+        reference_frequency_ir_mhz=float(context["reference_frequency_ir_mhz"]),
+        calibration_offset_ir_mhz=float(context["calibration_offset_ir_mhz"]),
+        reference_axis_shift_ir_mhz=float(
+            context.get("reference_axis_shift_ir_mhz", 0.0)
+        ),
+    )
+
+
+def _marker_frequency_ghz_from_delta(
+    delta_mhz: float, context: dict[str, object]
+) -> float:
+    convert = IR_UV_CONVERSION_FACTOR if context["ir_uv"] == "UV" else 1
+    marker_ir_mhz = (
+        float(delta_mhz) / convert
+        + float(context["reference_frequency_ir_mhz"])
+        + float(context["calibration_offset_ir_mhz"])
+        + float(context.get("reference_axis_shift_ir_mhz", 0.0))
+    )
+    if context["ir_uv"] == "UV":
+        return marker_ir_mhz * IR_UV_CONVERSION_FACTOR / 1e3
+    return marker_ir_mhz / 1e3
+
+
+def _sync_vertical_marker_mode() -> None:
+    previous_mode = st.session_state.get("vertical_marker_previous_mode")
+    current_mode = st.session_state.get("vertical_marker_mode")
+    context = st.session_state.get("vertical_marker_conversion_context")
+    if previous_mode == current_mode or not isinstance(context, dict):
+        st.session_state["vertical_marker_previous_mode"] = current_mode
+        return
+    if current_mode == "Δ frequency":
+        st.session_state["vertical_marker_delta_mhz"] = (
+            _marker_delta_from_frequency_ghz(
+                float(st.session_state["vertical_marker_frequency_ghz"]),
+                context,
+            )
+        )
+    elif current_mode == "frequency":
+        st.session_state["vertical_marker_frequency_ghz"] = (
+            _marker_frequency_ghz_from_delta(
+                float(st.session_state["vertical_marker_delta_mhz"]),
+                context,
+            )
+        )
+    st.session_state["vertical_marker_previous_mode"] = current_mode
+
+
+def _selected_table_rows(
+    table_source_df: pd.DataFrame,
+    selected_rows: list[int],
+) -> pd.DataFrame:
+    row_ids = [
+        int(row_id)
+        for row_id in selected_rows
+        if 0 <= int(row_id) < len(table_source_df)
+    ]
+    if not row_ids:
+        return table_source_df.iloc[0:0]
+    return table_source_df.iloc[row_ids].copy()
+
+
+def _format_float_cell(row: pd.Series, column: str, precision: int = 3) -> str | None:
+    if column not in row or pd.isna(row[column]):
+        return None
+    try:
+        return f"{float(row[column]):.{precision}f}"
+    except (TypeError, ValueError):
+        return str(row[column])
+
+
+def _number_column_config(
+    columns: list[str],
+    formats: dict[str, str],
+) -> dict[str, st.column_config.NumberColumn]:
+    return {
+        column: st.column_config.NumberColumn(column, format=formats[column])
+        for column in columns
+        if column in formats
+    }
+
+
+def _selected_line_readout_rows(
+    selected_rows: pd.DataFrame, ir_uv: str
+) -> pd.DataFrame:
+    records: list[dict[str, object]] = []
+    for _, row in selected_rows.iterrows():
+        frequency_ghz = _format_float_cell(row, f"frequency [{ir_uv}, GHz]", 6)
+        record: dict[str, object] = {"transition": row.get("transition", "")}
+        if frequency_ghz is not None:
+            record[f"{ir_uv} freq [GHz]"] = frequency_ghz
+            current_frequency_ghz = float(row[f"frequency [{ir_uv}, GHz]"])
+            uv_frequency_ghz = (
+                current_frequency_ghz
+                if ir_uv == "UV"
+                else current_frequency_ghz * IR_UV_CONVERSION_FACTOR
+            )
+            wavelength_nm = 299792.458 / uv_frequency_ghz
+            record["UV wavelength [nm]"] = f"{wavelength_nm:.6f}"
+        for source, target in [
+            (f"{DELTA} freq [{ir_uv}, MHz]", f"{DELTA} freq [MHz]"),
+            (f"{DELTA} from 0 V/cm [{ir_uv}, MHz]", f"{DELTA} from 0 [MHz]"),
+            ("strength", "strength"),
+            ("photons", "photons"),
+            ("P'", "parity"),
+            ("dominant mF", "dominant mF"),
+        ]:
+            if source in row and not pd.isna(row[source]):
+                record[target] = row[source]
+        records.append(record)
+    return pd.DataFrame.from_records(records)
 
 
 def render_grid_app() -> None:
@@ -139,26 +303,48 @@ def render_grid_app() -> None:
 
     with st.sidebar:
         st.title("Transition finder")
-        ez_values = [float(v) for v in grid.ez_values]
-        ez_v_cm = st.selectbox(
-            label="Electric Field Ez [V/cm]", options=ez_values, index=0
-        )
-        resolving_frequency = st.number_input(
-            label="Resolving Frequency [IR, MHz]",
-            value=DEFAULT_RESOLVING_FREQUENCY,
-            min_value=0.0,
-            step=0.5,
-            format="%.1f",
-        )
-        polarization = st.selectbox(
-            label="Polarization",
-            options=list(POLARIZATION_STRENGTH_COLUMNS),
-            index=0,
-        )
+        transition_container = st.container()
+        field_container = st.container()
+        display_container = st.container()
+        reference_container = st.container()
+
+        with transition_container:
+            st.subheader("Transition")
+            transition_names = grid.transition_names
+            if not transition_names:
+                st.error("No transitions are available in the loaded grid.")
+                return
+            transition_selector = st.selectbox(
+                label="Transition",
+                options=transition_names,
+                label_visibility="collapsed",
+            )
+            polarization = st.selectbox(
+                label="Polarization",
+                options=list(POLARIZATION_STRENGTH_COLUMNS),
+                index=0,
+            )
+
+        with field_container:
+            st.subheader("Field / Resolution")
+            ez_values = [float(v) for v in grid.ez_values]
+            ez_v_cm = st.selectbox(
+                label="Electric Field Ez [V/cm]", options=ez_values, index=0
+            )
+            resolving_frequency = st.number_input(
+                label="Resolution / linewidth [IR, MHz]",
+                value=DEFAULT_RESOLVING_FREQUENCY,
+                min_value=0.0,
+                step=0.5,
+                format="%.1f",
+            )
+
         grid_slice = grid.closest_slice(float(ez_v_cm))
         selected_lines = apply_polarization_selection(grid_slice.lines, polarization)
         if selected_lines.empty:
-            st.error(f"No allowed E1 state pairs remain for {polarization} polarization.")
+            st.error(
+                f"No allowed E1 state pairs remain for {polarization} polarization."
+            )
             return
         has_mj_population_data = "ground_mJ_dominant" in selected_lines.columns
         has_initial_level_population_data = set(INITIAL_LEVEL_COLUMNS).issubset(
@@ -178,32 +364,80 @@ def render_grid_app() -> None:
                 zero_field_lines,
                 resolving_frequency_mhz=float(resolving_frequency),
             )
-        transition_names = sorted(
-            str(name) for name in clusters["transition_name"].unique().tolist()
-        )
-        if not transition_names:
-            st.error("No clustered transitions are available for this field value.")
-            return
-        transition_selector = st.selectbox(label="Transition", options=transition_names)
-        transition_types = st.multiselect(
-            label="Transition Types",
-            options=["P", "Q", "R"],
-            default=["P", "Q", "R"],
-        )
-        ir_uv = st.selectbox(label="UV or IR", options=["IR", "UV"], index=0)
-        adjust_energy_range_for_mode(ir_uv)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.number_input(label="MHz", max_value=0, step=1, key="energy_min_val")
-        with col2:
-            st.number_input(label="MHz", min_value=0, step=1, key="energy_max_val")
-        calibration_transition = DEFAULT_CALIBRATION_TRANSITION
-        cesium_frequency = st.number_input(
-            label="Cesium Frequency [GHz]",
-            value=calibration_transition.cesium_frequency / 1e3,
-            step=1e-3,
-            format="%.3f",
-        )
+        with display_container:
+            st.subheader("Display Window")
+            transition_types = st.multiselect(
+                label="Branches",
+                options=["P", "Q", "R"],
+                default=["P", "Q", "R"],
+            )
+            ir_uv = st.selectbox(label="Frequency scale", options=["IR", "UV"], index=0)
+            adjust_energy_range_for_mode(ir_uv)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.number_input(label="MHz", max_value=0, step=1, key="energy_min_val")
+            with col2:
+                st.number_input(label="MHz", min_value=0, step=1, key="energy_max_val")
+            st.markdown(
+                """
+                <style>
+                .st-key-range_buttons div[data-testid="stHorizontalBlock"] {
+                    flex-wrap: wrap;
+                }
+                .st-key-range_buttons div[data-testid="stColumn"] {
+                    flex: 0 0 auto;
+                    min-width: 5.8rem;
+                    width: auto !important;
+                }
+                .st-key-range_buttons button {
+                    white-space: nowrap;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            with st.container(key="range_buttons", horizontal=True, gap="small"):
+                for limit in [50, 100, 300, 1000]:
+                    st.button(
+                        f"±{limit}",
+                        on_click=_set_energy_range,
+                        args=(limit,),
+                    )
+                st.button(
+                    "Reset range",
+                    on_click=_set_energy_range,
+                    args=(DEFAULT_ENERGY_RANGE,),
+                )
+
+        with reference_container:
+            st.subheader("Frequency Reference")
+            calibration_transition = DEFAULT_CALIBRATION_TRANSITION
+            cesium_frequency = st.number_input(
+                label="Cesium Frequency [GHz]",
+                value=calibration_transition.cesium_frequency / 1e3,
+                step=1e-3,
+                format="%.3f",
+                key="cesium_frequency_ghz",
+            )
+            aom_shift_uv_mhz = st.number_input(
+                label="AOM shift at molecules [UV, MHz]",
+                value=float(st.session_state["aom_shift_uv_mhz"]),
+                step=1.0,
+                format="%.1f",
+                key="aom_shift_uv_mhz",
+            )
+            st.button(
+                "Reset reference",
+                use_container_width=True,
+                on_click=_reset_frequency_reference,
+            )
+            reference_shift_uv_mhz = -float(aom_shift_uv_mhz)
+            if not np.isclose(reference_shift_uv_mhz, 0.0):
+                st.caption(
+                    "Reference axis shift: "
+                    f"{reference_shift_uv_mhz:+.1f} MHz UV "
+                    f"({reference_shift_uv_mhz / IR_UV_CONVERSION_FACTOR:+.1f} MHz IR)."
+                )
 
     if not transition_types:
         st.error("Select at least one transition type.")
@@ -217,7 +451,14 @@ def render_grid_app() -> None:
         ].reset_index(drop=True)
     if transition_selector[0] not in transition_types:
         st.error(
-            f"Selected transition type '{transition_selector[0]}' is not in the filter."
+            f"Selected transition branch '{transition_selector[0]}' is hidden. "
+            "Enable it under Branches to show this transition."
+        )
+        return
+    if not (clusters["transition_name"] == transition_selector).any():
+        st.error(
+            f"No visible components for {transition_selector!r} with the current "
+            "field, polarization, and displayed branches."
         )
         return
 
@@ -226,12 +467,14 @@ def render_grid_app() -> None:
         st.session_state["energy_max_val"],
     )
     calibration = calibration_offset_from_grid(grid, cesium_frequency)
+    reference_axis_shift_ir_mhz = -float(aom_shift_uv_mhz) / IR_UV_CONVERSION_FACTOR
     visible_clusters = select_clusters_for_display(
         clusters,
         transition_selector,
         energy_lim,
         ir_uv,
         calibration_offset_ir_mhz=calibration,
+        reference_axis_shift_ir_mhz=reference_axis_shift_ir_mhz,
         zero_field_clusters=zero_field_clusters,
     )
     visible_cluster_ids = set(visible_clusters["cluster_id"].astype(int))
@@ -242,7 +485,7 @@ def render_grid_app() -> None:
     )
     visible_lines = _visible_cluster_lines(cluster_lines, visible_cluster_ids)
 
-    with st.sidebar.container(border=True):
+    with st.sidebar:
         st.subheader("Population")
         population_models = list(PEAK_HEIGHT_MODELS)
         if not has_mj_population_data:
@@ -276,6 +519,7 @@ def render_grid_app() -> None:
         lens_target_mj = 0
         lens_off_target_weight = 0.0
         selected_initial_levels: list[tuple[int, float, int, int]] = []
+        normalize_heights = st.checkbox("Normalize tallest peak to 1", value=False)
         if height_model == "Thermal population":
             rotational_temperature = st.number_input(
                 label="Rotational Temperature [K]",
@@ -312,7 +556,7 @@ def render_grid_app() -> None:
                     [
                         {
                             "J": int(level[0]),
-                            "F1": _format_half_integer(level[1]),
+                            "F1": float(level[1]),
                             "F": int(level[2]),
                             "mF": int(level[3]),
                         }
@@ -354,6 +598,65 @@ def render_grid_app() -> None:
             ].astype(int)
         )
 
+    summary_info = " | ".join(
+        [
+            f"Ez={grid_slice.ez_v_cm:g} V/cm",
+            f"polarization={polarization}",
+            f"Cs={cesium_frequency:.3f} GHz",
+            f"calibration offset={calibration:.3f} MHz IR",
+            f"AOM={float(aom_shift_uv_mhz):+.1f} MHz UV",
+            f"axis shift={reference_axis_shift_ir_mhz * IR_UV_CONVERSION_FACTOR:+.1f} MHz UV",
+        ]
+    )
+
+    reference_frequency_ir_mhz = transition_centroid(clusters, transition_selector)
+    default_marker_frequency_ghz = _display_frequency_ghz(
+        reference_frequency_ir_mhz,
+        ir_uv=ir_uv,
+        calibration_offset_ir_mhz=calibration,
+        reference_axis_shift_ir_mhz=reference_axis_shift_ir_mhz,
+    )
+    marker_context = (
+        transition_selector,
+        ir_uv,
+        round(float(calibration), 9),
+        round(float(reference_axis_shift_ir_mhz), 9),
+    )
+    if st.session_state.get("vertical_marker_context") != marker_context:
+        st.session_state["vertical_marker_frequency_ghz"] = default_marker_frequency_ghz
+        st.session_state["vertical_marker_delta_mhz"] = 0.0
+        st.session_state["vertical_marker_context"] = marker_context
+    st.session_state["vertical_marker_conversion_context"] = {
+        "ir_uv": ir_uv,
+        "reference_frequency_ir_mhz": reference_frequency_ir_mhz,
+        "calibration_offset_ir_mhz": calibration,
+        "reference_axis_shift_ir_mhz": reference_axis_shift_ir_mhz,
+    }
+    st.session_state.setdefault(
+        "vertical_marker_previous_mode",
+        st.session_state["vertical_marker_mode"],
+    )
+
+    vertical_marker_mhz = None
+    vertical_marker_label = "marker"
+    if st.session_state["show_vertical_marker"]:
+        if st.session_state["vertical_marker_mode"] == "frequency":
+            vertical_marker_mhz = marker_position_mhz(
+                float(st.session_state["vertical_marker_frequency_ghz"]),
+                f"{ir_uv} GHz",
+                ir_uv=ir_uv,
+                reference_frequency_ir_mhz=reference_frequency_ir_mhz,
+                calibration_offset_ir_mhz=calibration,
+            )
+            vertical_marker_label = "marker"
+        else:
+            vertical_marker_mhz = float(st.session_state["vertical_marker_delta_mhz"])
+            vertical_marker_label = f"Δ={vertical_marker_mhz:.3f} MHz"
+
+    plot_title = (
+        f"{transition_selector} | Ez={grid_slice.ez_v_cm:g} V/cm | "
+        f"{polarization} | {ir_uv}"
+    )
     fig = generate_grid_plot(
         transition_selector,
         visible_clusters,
@@ -365,9 +668,7 @@ def render_grid_app() -> None:
         cluster_lines=cluster_lines,
         lens_target_mj=int(lens_target_mj) if height_model == "Lens mJ-selected" else 0,
         lens_off_target_weight=(
-            float(lens_off_target_weight)
-            if height_model == "Lens mJ-selected"
-            else 0.0
+            float(lens_off_target_weight) if height_model == "Lens mJ-selected" else 0.0
         ),
         selected_initial_levels=set(selected_initial_levels)
         if height_model == "Selected initial levels"
@@ -376,8 +677,39 @@ def render_grid_app() -> None:
         selected_initial_f1=None,
         selected_initial_f=None,
         selected_initial_mf=None,
+        reference_frequency_ir_mhz=reference_frequency_ir_mhz,
+        calibration_offset_ir_mhz=calibration,
+        reference_axis_shift_ir_mhz=reference_axis_shift_ir_mhz,
+        vertical_marker_mhz=vertical_marker_mhz,
+        vertical_marker_label=vertical_marker_label,
+        show_zero_line=True,
+        normalize_heights=normalize_heights,
+        title=plot_title,
     )
     st.plotly_chart(fig, width="stretch")
+
+    marker_columns = st.columns([1, 1, 2], vertical_alignment="bottom")
+    marker_columns[0].checkbox("marker", key="show_vertical_marker")
+    marker_columns[1].selectbox(
+        "mode",
+        options=["frequency", "Δ frequency"],
+        key="vertical_marker_mode",
+        on_change=_sync_vertical_marker_mode,
+    )
+    if st.session_state["vertical_marker_mode"] == "frequency":
+        marker_columns[2].number_input(
+            f"frequency [{ir_uv}, GHz]",
+            step=1e-3,
+            format="%.3f",
+            key="vertical_marker_frequency_ghz",
+        )
+    else:
+        marker_columns[2].number_input(
+            f"Δ frequency [{ir_uv}, MHz]",
+            step=1.0,
+            format="%.3f",
+            key="vertical_marker_delta_mhz",
+        )
 
     summary_columns = [
         column
@@ -395,22 +727,15 @@ def render_grid_app() -> None:
     summary_df = table_source_df[["transition", *summary_columns]].rename(
         columns={"P'": "parity"}
     )
-    if f"Δ freq [{ir_uv}, MHz]" in summary_df.columns:
-        summary_df[f"Δ freq [{ir_uv}, MHz]"] = summary_df[
-            f"Δ freq [{ir_uv}, MHz]"
-        ].map(lambda value: f"{value:.1f}")
-    if f"Δ from 0 V/cm [{ir_uv}, MHz]" in summary_df.columns:
-        summary_df[f"Δ from 0 V/cm [{ir_uv}, MHz]"] = summary_df[
-            f"Δ from 0 V/cm [{ir_uv}, MHz]"
-        ].map(lambda value: f"{value:.1f}")
-    if f"frequency [{ir_uv}, GHz]" in summary_df.columns:
-        summary_df[f"frequency [{ir_uv}, GHz]"] = summary_df[
-            f"frequency [{ir_uv}, GHz]"
-        ].map(lambda value: f"{value:.3f}")
-    if "strength" in summary_df.columns:
-        summary_df["strength"] = summary_df["strength"].map(
-            lambda value: f"{value:.3e}"
-        )
+    summary_column_config = _number_column_config(
+        summary_df.columns.to_list(),
+        {
+            f"Δ freq [{ir_uv}, MHz]": "%.1f",
+            f"Δ from 0 V/cm [{ir_uv}, MHz]": "%.1f",
+            f"frequency [{ir_uv}, GHz]": "%.3f",
+            "strength": "%.3e",
+        },
+    )
 
     st.dataframe(
         summary_df,
@@ -419,7 +744,27 @@ def render_grid_app() -> None:
         key=summary_table_key,
         on_select="rerun",
         selection_mode="multi-row",
+        column_config=summary_column_config,
     )
+
+    selected_summary_rows = _selected_table_rows(summary_df, selected_rows)
+    export_columns = st.columns(2)
+    export_columns[0].download_button(
+        "Download visible CSV",
+        summary_df.to_csv(index=False),
+        file_name="visible_transitions.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+    export_columns[1].download_button(
+        "Download selected CSV",
+        selected_summary_rows.to_csv(index=False),
+        file_name="selected_transitions.csv",
+        mime="text/csv",
+        use_container_width=True,
+        disabled=selected_summary_rows.empty,
+    )
+
     with st.expander("Show full parent and mF detail"):
         detail_columns = [
             column
@@ -447,27 +792,23 @@ def render_grid_app() -> None:
         )
         if "cluster_id" in detail_df.columns:
             detail_df = detail_df.drop(columns=["cluster_id"])
-        if f"Δ freq [{ir_uv}, MHz]" in detail_df.columns:
-            detail_df[f"Δ freq [{ir_uv}, MHz]"] = detail_df[
-                f"Δ freq [{ir_uv}, MHz]"
-            ].map(lambda value: f"{value:.1f}")
-        if f"Δ from 0 V/cm [{ir_uv}, MHz]" in detail_df.columns:
-            detail_df[f"Δ from 0 V/cm [{ir_uv}, MHz]"] = detail_df[
-                f"Δ from 0 V/cm [{ir_uv}, MHz]"
-            ].map(lambda value: f"{value:.1f}")
-        if f"frequency [{ir_uv}, GHz]" in detail_df.columns:
-            detail_df[f"frequency [{ir_uv}, GHz]"] = detail_df[
-                f"frequency [{ir_uv}, GHz]"
-            ].map(lambda value: f"{value:.3f}")
-        if "span [IR, MHz]" in detail_df.columns:
-            detail_df["span [IR, MHz]"] = detail_df["span [IR, MHz]"].map(
-                lambda value: f"{value:.2f}"
-            )
-        if "est. photons" in detail_df.columns:
-            detail_df["est. photons"] = detail_df["est. photons"].map(
-                lambda value: f"{value:.2f}"
-            )
-        st.dataframe(detail_df, hide_index=True, width="stretch")
+        detail_column_config = _number_column_config(
+            detail_df.columns.to_list(),
+            {
+                f"Δ freq [{ir_uv}, MHz]": "%.1f",
+                f"Δ from 0 V/cm [{ir_uv}, MHz]": "%.1f",
+                f"frequency [{ir_uv}, GHz]": "%.3f",
+                "span [IR, MHz]": "%.2f",
+                "est. photons": "%.2f",
+            },
+        )
+        st.dataframe(
+            detail_df,
+            hide_index=True,
+            width="stretch",
+            column_config=detail_column_config,
+        )
+    st.caption(summary_info)
     st.caption(
         f"Ez={grid_slice.ez_v_cm:g} V/cm, "
         f"{len(selected_lines)} {polarization} E1 state pairs before clustering "
@@ -477,11 +818,12 @@ def render_grid_app() -> None:
     )
 
 
-initialize_session_state()
-if not (file_path / GRID_ARTIFACT).exists():
-    st.error(
-        f"{GRID_ARTIFACT} not found. Run 'uv run python compute_transitions.py' "
-        "to generate the required transition grid."
-    )
-else:
-    render_grid_app()
+if __name__ == "__main__":
+    initialize_session_state()
+    if not (file_path / GRID_ARTIFACT).exists():
+        st.error(
+            f"{GRID_ARTIFACT} not found. Run 'uv run python compute_transitions.py' "
+            "to generate the required transition grid."
+        )
+    else:
+        render_grid_app()

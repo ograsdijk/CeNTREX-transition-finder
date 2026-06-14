@@ -1,4 +1,5 @@
 import sys
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
@@ -10,24 +11,220 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from transition_grid import (
     E1_POLARIZATION_VECTORS,
+    ElapsedSpinner,
     POLARIZATION_STRENGTH_COLUMNS,
     _assign_labels_by_overlap,
     _build_e1_operator_matrices,
     _build_hamiltonian_sequences,
     _dominant_uncoupled_mj_values,
     _polarization_strength_matrices,
+    _tracking_boundary_permutation,
     _build_tracked_manifold,
     _build_transition_candidates,
     _coupling_matrices_for_field,
     _line_records_for_slice,
     apply_polarization_selection,
+    build_arg_parser,
     build_transition_grid,
     cluster_transition_components,
     enrich_cluster_display_fields,
+    format_elapsed,
     generate_cluster_dataframe,
     generate_ED_ME_mixed_state,
     transition_centroid,
 )
+
+
+def test_format_elapsed_uses_hh_mm_ss():
+    assert format_elapsed(0.2) == "00:00:00"
+    assert format_elapsed(65.9) == "00:01:05"
+    assert format_elapsed(3661.0) == "01:01:01"
+    assert format_elapsed(-5.0) == "00:00:00"
+
+
+def test_spinner_disables_for_non_tty_stream():
+    stream = StringIO()
+    spinner = ElapsedSpinner("Building", stream=stream)
+
+    assert not spinner.enabled
+
+
+def test_arg_parser_accepts_no_spinner_flag():
+    args = build_arg_parser().parse_args(
+        [
+            "--no-spinner",
+            "--workers",
+            "2",
+            "--e1-workers",
+            "4",
+            "--tracking-workers",
+            "3",
+        ]
+    )
+
+    assert args.no_spinner
+    assert args.workers == 2
+    assert args.e1_workers == 4
+    assert args.tracking_workers == 3
+
+
+def test_build_transition_grid_uses_progress_reporter_callback():
+    progress_lines: list[str] = []
+
+    build_transition_grid(
+        ez_values=[0.0],
+        ground_js=[0],
+        excited_js=[1],
+        progress=True,
+        progress_reporter=progress_lines.append,
+    )
+
+    assert len(progress_lines) == 2
+    assert progress_lines[0].startswith("Setup:")
+    assert "tracking=" in progress_lines[0]
+    assert "(workers=1)" in progress_lines[0]
+    assert progress_lines[1].startswith("Ez=0")
+
+
+def test_build_transition_grid_eta_excludes_setup_time():
+    class FakeTimer:
+        def __init__(self, values: list[float]) -> None:
+            self.values = values
+            self.index = 0
+
+        def __call__(self) -> float:
+            if self.index >= len(self.values):
+                return self.values[-1]
+            value = self.values[self.index]
+            self.index += 1
+            return value
+
+    timer = FakeTimer(
+        [
+            0.0,
+            100.0,
+            110.0,
+            120.0,
+            120.0,
+            121.0,
+            122.0,
+            123.0,
+            123.0,
+            123.0,
+            123.0,
+            124.0,
+            125.0,
+            126.0,
+        ]
+    )
+    progress_lines: list[str] = []
+
+    build_transition_grid(
+        ez_values=[0.0, 25.0],
+        ground_js=[0],
+        excited_js=[1],
+        progress=True,
+        progress_reporter=progress_lines.append,
+        timer=timer,
+    )
+
+    assert progress_lines[0].startswith("Setup:")
+    assert "elapsed=126.0s" in progress_lines[1]
+    assert "eta=3.0s" in progress_lines[1]
+    assert "eta=0.0s" in progress_lines[2]
+
+
+def test_e1_operator_matrices_parallel_matches_serial():
+    (
+        _x_uncoupled,
+        x_basis,
+        _x_transform,
+        b_basis,
+        _b_label_basis,
+        _x_matrices,
+        _b_matrices,
+    ) = _build_hamiltonian_sequences(
+        np.array([0.0]),
+        np.array([0.0, 0.0, 1e-3]),
+        [0],
+        [1],
+    )
+
+    serial = _build_e1_operator_matrices(x_basis, b_basis, workers=1)
+    parallel = _build_e1_operator_matrices(x_basis, b_basis, workers=2)
+
+    for name in serial:
+        assert np.allclose(serial[name], parallel[name])
+
+
+def test_block_tracked_manifold_matches_serial_tracking():
+    matrices = []
+    for field in np.linspace(-1.0, 1.0, 9):
+        matrices.append(np.array([[field, 0.05], [0.05, -field]], dtype=float))
+    matrices_array = np.asarray(matrices, dtype=np.complex128)
+
+    serial_energies, serial_vectors, serial_overlaps = _build_tracked_manifold(
+        matrices_array,
+        workers=1,
+    )
+    parallel_energies, parallel_vectors, parallel_overlaps = _build_tracked_manifold(
+        matrices_array,
+        workers=3,
+    )
+
+    assert np.allclose(serial_energies, parallel_energies)
+    assert np.allclose(serial_overlaps, parallel_overlaps)
+    vector_overlaps = np.abs(np.sum(serial_vectors.conj() * parallel_vectors, axis=1))
+    assert np.allclose(vector_overlaps, 1.0)
+
+
+def test_tracking_boundary_permutation_uses_energy_distance():
+    reference_energies = np.array([0.0, 10.0])
+    candidate_energies = np.array([9.0, 1.0])
+    reference_vectors = np.eye(2, dtype=np.complex128)
+    candidate_vectors = np.array(
+        [
+            [1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0)],
+            [1.0 / np.sqrt(2.0), -1.0 / np.sqrt(2.0)],
+        ],
+        dtype=np.complex128,
+    )
+
+    permutation = _tracking_boundary_permutation(
+        reference_energies,
+        reference_vectors,
+        candidate_energies,
+        candidate_vectors,
+    )
+
+    assert np.array_equal(permutation, np.array([1, 0]))
+
+
+def test_tiny_grid_parallel_tracking_matches_serial_frequencies():
+    serial = build_transition_grid(
+        ez_values=[0.0, 25.0, 50.0],
+        ground_js=[0, 1],
+        excited_js=[1],
+        progress=False,
+        tracking_workers=1,
+    )
+    parallel = build_transition_grid(
+        ez_values=[0.0, 25.0, 50.0],
+        ground_js=[0, 1],
+        excited_js=[1],
+        progress=False,
+        tracking_workers=2,
+    )
+
+    assert parallel.metadata["tracking_workers"] == 2
+    for ez_v_cm in serial.ez_values:
+        serial_lines = serial.closest_slice(float(ez_v_cm)).lines
+        parallel_lines = parallel.closest_slice(float(ez_v_cm)).lines
+        assert len(serial_lines) == len(parallel_lines)
+        assert np.allclose(
+            serial_lines["frequency_ir_mhz"].to_numpy(),
+            parallel_lines["frequency_ir_mhz"].to_numpy(),
+        )
 
 
 def test_eigenshuffle_keeps_branch_identity_through_crossing():
@@ -354,6 +551,54 @@ def test_generate_cluster_dataframe_uses_weighted_reference_centroid():
     assert list(df["Δ freq [IR, MHz]"]) == [-3.0, 1.0]
     assert list(df["Δ from 0 V/cm [IR, MHz]"]) == [-1.0, 3.0]
     assert list(df["frequency [IR, GHz]"]) == [0.101, 0.105]
+
+
+def test_generate_cluster_dataframe_applies_reference_axis_shift():
+    clusters = pd.DataFrame(
+        [
+            {
+                "transition_name": "R(0) F1'=1/2 F'=1",
+                "branch": "R",
+                "J_ground": 0,
+                "excited_parent_parity": "-",
+                "frequency_ir_mhz": 100.0,
+                "spread_ir_mhz": 0.0,
+                "strength": 1.0,
+                "components": 1,
+                "mf_branches": 1,
+                "delta_mf": "0",
+                "nphotons": 10.0,
+            },
+            {
+                "transition_name": "R(0) F1'=1/2 F'=1",
+                "branch": "R",
+                "J_ground": 0,
+                "excited_parent_parity": "+",
+                "frequency_ir_mhz": 104.0,
+                "spread_ir_mhz": 0.0,
+                "strength": 3.0,
+                "components": 1,
+                "mf_branches": 1,
+                "delta_mf": "+1",
+                "nphotons": 20.0,
+            },
+        ]
+    )
+
+    df = generate_cluster_dataframe(
+        clusters,
+        "R(0) F1'=1/2 F'=1",
+        energy_lim=(-20, 100),
+        ir_uv="UV",
+        calibration_offset_ir_mhz=1.0,
+        reference_axis_shift_ir_mhz=20.0,
+        zero_field_clusters=clusters.assign(frequency_ir_mhz=[95.0, 103.0]),
+    )
+
+    delta = chr(916)
+    assert list(df[f"{delta} freq [UV, MHz]"]) == [-12.0, 4.0]
+    assert list(df[f"{delta} from 0 V/cm [UV, MHz]"]) == [-4.0, 12.0]
+    assert list(df["frequency [UV, GHz]"]) == [0.484, 0.5]
 
 
 def test_generate_cluster_dataframe_omits_zero_field_shift_without_reference():

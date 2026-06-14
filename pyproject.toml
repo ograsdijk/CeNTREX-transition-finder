@@ -13,7 +13,7 @@ dependencies = [
     "plotly",
     "numpy",
     "scipy",
-    "centrex-tlf",
+    "centrex-tlf==0.1.9",
     "eigenshuffle"
 ]
 

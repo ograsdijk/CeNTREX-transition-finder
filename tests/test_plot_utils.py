@@ -11,6 +11,7 @@ from plot_utils import (
     DEFAULT_POPULATION_J_VALUES,
     generate_grid_plot,
     lens_mj_signal_amplitude,
+    marker_position_mhz,
     selected_initial_level_signal_amplitude,
     signal_amplitude,
 )
@@ -382,3 +383,184 @@ def test_generate_grid_plot_uses_linewidth_for_gaussian_width():
 
     assert np.max(narrow_y) == np.max(broad_y)
     assert broad_y[offset_idx] > narrow_y[offset_idx]
+
+
+def test_marker_position_converts_absolute_frequency_to_delta_axis():
+    position = marker_position_mhz(
+        0.484,
+        "UV GHz",
+        ir_uv="UV",
+        reference_frequency_ir_mhz=100.0,
+        calibration_offset_ir_mhz=1.0,
+    )
+
+    assert position == 80.0
+
+
+def test_generate_grid_plot_renders_measured_marker_trace():
+    delta = chr(916)
+    visible_clusters = pd.DataFrame(
+        [
+            {
+                "cluster_id": 0,
+                "transition_name": "R(2) F1'=7/2 F'=3",
+                "branch": "R",
+                "J_ground": 2,
+                "strength": 1.0,
+                "nphotons": 1.0,
+                f"{delta} freq [IR, MHz]": 0.0,
+            }
+        ]
+    )
+    rotational_population = np.ones(13, dtype=float)
+    markers = pd.DataFrame(
+        [
+            {
+                "label": "measured",
+                "frequency": 125.0,
+                "scale": "IR MHz",
+                "color": "#ff0000",
+                "note": "scan peak",
+            }
+        ]
+    )
+
+    fig = generate_grid_plot(
+        "R(2) F1'=7/2 F'=3",
+        visible_clusters,
+        rotational_population,
+        height_model="Equal peaks",
+        measured_markers=markers,
+        reference_frequency_ir_mhz=100.0,
+        calibration_offset_ir_mhz=5.0,
+    )
+
+    marker_trace = fig.data[-4]
+    assert marker_trace.name == "measured"
+    assert list(marker_trace.x) == [20.0, 20.0]
+    assert marker_trace.line.dash == "dash"
+
+
+def test_generate_grid_plot_defaults_blank_marker_color():
+    delta = chr(916)
+    visible_clusters = pd.DataFrame(
+        [
+            {
+                "cluster_id": 0,
+                "transition_name": "R(2) F1'=7/2 F'=3",
+                "branch": "R",
+                "J_ground": 2,
+                "strength": 1.0,
+                "nphotons": 1.0,
+                f"{delta} freq [IR, MHz]": 0.0,
+            }
+        ]
+    )
+    markers = pd.DataFrame(
+        [
+            {
+                "label": "measured",
+                "frequency": 20.0,
+                "scale": "Δ MHz",
+                "color": None,
+                "note": "",
+            }
+        ]
+    )
+
+    fig = generate_grid_plot(
+        "R(2) F1'=7/2 F'=3",
+        visible_clusters,
+        np.ones(13, dtype=float),
+        height_model="Equal peaks",
+        measured_markers=markers,
+        reference_frequency_ir_mhz=100.0,
+    )
+
+    marker_trace = fig.data[-4]
+    assert marker_trace.line.color == "#d62728"
+
+
+def test_generate_grid_plot_renders_single_vertical_marker_trace():
+    delta = chr(916)
+    visible_clusters = pd.DataFrame(
+        [
+            {
+                "cluster_id": 0,
+                "transition_name": "R(2) F1'=7/2 F'=3",
+                "branch": "R",
+                "J_ground": 2,
+                "strength": 1.0,
+                "nphotons": 1.0,
+                f"{delta} freq [IR, MHz]": 0.0,
+            }
+        ]
+    )
+
+    fig = generate_grid_plot(
+        "R(2) F1'=7/2 F'=3",
+        visible_clusters,
+        np.ones(13, dtype=float),
+        height_model="Equal peaks",
+        vertical_marker_mhz=12.5,
+        vertical_marker_label="marker 12.5",
+    )
+
+    marker_trace = fig.data[-4]
+    assert marker_trace.name == "marker 12.5"
+    assert list(marker_trace.x) == [12.5, 12.5]
+    assert marker_trace.line.dash == "dash"
+
+
+def test_generate_grid_plot_omits_single_vertical_marker_when_disabled():
+    delta = chr(916)
+    visible_clusters = pd.DataFrame(
+        [
+            {
+                "cluster_id": 0,
+                "transition_name": "R(2) F1'=7/2 F'=3",
+                "branch": "R",
+                "J_ground": 2,
+                "strength": 1.0,
+                "nphotons": 1.0,
+                f"{delta} freq [IR, MHz]": 0.0,
+            }
+        ]
+    )
+
+    fig = generate_grid_plot(
+        "R(2) F1'=7/2 F'=3",
+        visible_clusters,
+        np.ones(13, dtype=float),
+        height_model="Equal peaks",
+        vertical_marker_mhz=None,
+    )
+
+    assert all(trace.name != "marker" for trace in fig.data)
+
+
+def test_generate_grid_plot_can_normalize_peak_height():
+    delta = chr(916)
+    visible_clusters = pd.DataFrame(
+        [
+            {
+                "cluster_id": 0,
+                "transition_name": "R(2) F1'=7/2 F'=3",
+                "branch": "R",
+                "J_ground": 2,
+                "strength": 5.0,
+                "nphotons": 1.0,
+                f"{delta} freq [IR, MHz]": 0.0,
+            }
+        ]
+    )
+
+    fig = generate_grid_plot(
+        "R(2) F1'=7/2 F'=3",
+        visible_clusters,
+        np.ones(13, dtype=float),
+        height_model="Thermal population",
+        normalize_heights=True,
+    )
+
+    assert np.max(np.asarray(fig.data[0].y, dtype=float)) == 1.0
